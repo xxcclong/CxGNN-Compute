@@ -18,10 +18,7 @@ void init_compute(py::module &m) {
   m.def("get_graph_structure_score", &get_graph_structure_score, "");
   m.def("edge_attention", &edge_softmax_forward, "ptr"_a, "idx"_a, "att_dst"_a,
         "att_src"_a, "num_edge"_a, "relu_l"_a, "Edge attention");
-  m.def("edge_attention_history", &edge_softmax_history_forward, "ptr"_a,
-        "idx"_a, "att_dst"_a, "att_src"_a, "num_edge"_a, "relu_l"_a,
-        "history_map"_a, "Edge attention with history");
-  m.def("edge_value_degree", &edge_value_degree, "ptr"_a, "num_dsst"_a,
+  m.def("edge_value_degree", &edge_value_degree, "ptr"_a, "num_dst"_a,
         "num_edge"_a, "Edge value degree");
 }
 
