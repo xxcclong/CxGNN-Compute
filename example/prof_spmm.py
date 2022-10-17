@@ -1,7 +1,6 @@
-import cxgnncomp as cxgc
 import torch
-from cxgnncomp.codegen.spmm import spmm_triton
 
+import cxgnncomp as cxgc
 from cxgnncomp.codegen.util import compare
 
 
@@ -22,15 +21,22 @@ def prepare_data():
 
 if __name__ == "__main__":
     x, ptr, idx, b = prepare_data()
-    val = torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                       device='cuda',
-                       dtype=torch.float32)
+    val = torch.randn(idx.shape, dtype=torch.float32, device='cuda')
     num_center = b["num_node_in_layer"][-2].item()
     output1 = cxgc.sage_sum_forward(x, ptr, idx, num_center)
-    output2 = cxgc.spmm_triton(x, ptr, idx, val, b["num_node_in_layer"][-2])
+    output2 = cxgc.spmm_triton(x, ptr, idx, num_center)
     compare(output1, output2)
-    cxgc.prof(
-        "spmm", "triton",
-        lambda: cxgc.spmm_triton(x, ptr, idx, val, b["num_node_in_layer"][-2]))
+    cxgc.prof("spmm", "triton",
+              lambda: cxgc.spmm_triton(x, ptr, idx, num_center))
     cxgc.prof("spmm", "manual",
               lambda: cxgc.sage_sum_forward(x, ptr, idx, num_center))
+
+    output1 = cxgc.sage_sum_forward_edge_value(x, ptr, idx, val, num_center)
+    output2 = cxgc.spmm_with_value_triton(x, ptr, idx, val, num_center)
+    compare(output1, output2)
+    cxgc.prof(
+        "spmm_with_value", "triton",
+        lambda: cxgc.spmm_with_value_triton(x, ptr, idx, val, num_center))
+    cxgc.prof(
+        "spmm_with_value", "manual",
+        lambda: cxgc.sage_sum_forward_edge_value(x, ptr, idx, val, num_center))
