@@ -1,6 +1,8 @@
 import torch  # Essential!
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, SAGEConv, GINConv, GATConv
+# from torch_geometric.nn import GCNConv, SAGEConv, GINConv, GATConv as  PyG_GCNConv, PyG_SAGEConv, PyG_GINConv, PyG_GATConv
+import torch_geometric.nn as pygnn
+import dgl.nn.pytorch.conv as dglnn
 from .graph_conv import MyGATConv, MyGCNConv, MyRGCNConvNaive, MyRGCNConvOpt1, MyRGCNConvOpt2, MySageConv, MyGINConv
 # import torch.autograd.profiler as profiler
 # from profile import gpu_profile
@@ -37,28 +39,48 @@ class GNN(torch.nn.Module):
         for bn in self.bns:
             bn.reset_parameters()
 
-    def forward(self, batch):
+    def forward_cxg(self, batch):
         x = batch.x
         for i, conv in enumerate(self.convs[:-1]):
-            if "CSR" in self.graph_type:
-                if self.graph_type == "CSR_Layer":
-                    num_node = batch.num_node_in_layer[self.num_layers - 1 - i]
-                else:
-                    num_node = 0
-                x = conv(x, batch.ptr, batch.idx, num_node)
+            if self.graph_type == "CSR_Layer":
+                num_node = batch.num_node_in_layer[self.num_layers - 1 - i]
             else:
-                x = conv(x, batch.edge_index)
-            # TODO: BN has different results for layered implementation
+                num_node = 0
+            x = conv(x, batch.ptr, batch.idx, num_node)
             x = self.bns[i](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        if "CSR" in self.graph_type:
-            x = self.convs[-1](x, batch.ptr, batch.idx,
-                               batch.num_node_in_layer[0]
-                               if self.graph_type == "CSR_Layer" else 0)
-        else:
-            x = self.convs[-1](x, batch.edge_index)
+        x = self.convs[-1](x, batch.ptr, batch.idx, batch.num_node_in_layer[0]
+                           if self.graph_type == "CSR_Layer" else 0)
         return x.log_softmax(dim=-1)
+
+    def forward_dgl(self, blocks, x):
+        for layer, conv in enumerate(self.convs[:-1]):
+            x = conv(blocks[layer], x)
+            x = self.bns[layer](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.convs[-1](blocks[-1], x)
+        return x.log_softmax(dim=-1)
+
+    def forward_pyg(self, edge_index, x):
+        for i, conv in enumerate(self.convs[:-1]):
+            x = conv(x, edge_index)
+            x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.convs[-1](x, edge_index)
+        return x.log_softmax(dim=-1)
+
+    def forward(self, input):
+        if "CSR" in self.graph_type:
+            return self.forward_cxg(input)
+        elif "DGL" in self.graph_type:
+            return self.forward_dgl(input[0], input[1])
+        elif "PyG" in self.graph_type or "COO" in self.graph_type:
+            return pygnn.GCNConv(input[0], input[1])
+        else:
+            assert (0)
 
 
 class SAGE(GNN):
@@ -67,38 +89,14 @@ class SAGE(GNN):
     def init_conv(self, in_channels, out_channels, **kwargs):
         if "CSR" in self.graph_type:
             return MySageConv(in_channels, out_channels)
+        elif "DGL" in self.graph_type:
+            return dglnn.SAGEConv(in_channels,
+                                  out_channels,
+                                  aggregator_type="pool")
+        elif "PyG" in self.graph_type or "COO" in self.graph_type:
+            return pygnn.SAGEConv(in_channels, out_channels)
         else:
-            return SAGEConv(in_channels, out_channels)
-
-    def set_trans_optim(self):
-        self.convs[0].mean_forward = False
-
-    def forward(self, batch):
-        x = batch.x
-        for i, conv in enumerate(self.convs[:-1]):
-            if "CSR" in self.graph_type:
-                if self.graph_type == "CSR_Layer":
-                    num_node = batch.num_node_in_layer[self.num_layers - 1 - i]
-                else:
-                    num_node = 0
-                x = conv(x,
-                         batch.ptr,
-                         batch.idx,
-                         num_node,
-                         noise=self.noise and self.training)
-            else:
-                x = conv(x, batch.edge_index)
-            # TODO: BN has different results for layered implementation
-            x = self.bns[i](x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        if "CSR" in self.graph_type:
-            x = self.convs[-1](x, batch.ptr, batch.idx,
-                               batch.num_node_in_layer[0]
-                               if self.graph_type == "CSR_Layer" else 0)
-        else:
-            x = self.convs[-1](x, batch.edge_index)
-        return x.log_softmax(dim=-1)
+            assert (0)
 
 
 class GCN(GNN):
@@ -106,8 +104,12 @@ class GCN(GNN):
     def init_conv(self, in_channels, out_channels, **kwargs):
         if "CSR" in self.graph_type:
             return MyGCNConv(in_channels, out_channels)
+        elif "DGL" in self.graph_type:
+            return dglnn.GraphConv(in_channels, out_channels)
+        elif "PyG" in self.graph_type or "COO" in self.graph_type:
+            return pygnn.GCNConv(in_channels, out_channels)
         else:
-            return GCNConv(in_channels, out_channels)
+            assert (0)
 
 
 class GAT(GNN):
@@ -119,8 +121,14 @@ class GAT(GNN):
             out_channels = out_channels // kwargs.get('heads', 1)
         if "CSR" in self.graph_type:
             return MyGATConv(in_channels, out_channels, **kwargs)
+        elif "DGL" in self.graph_type:
+            return dglnn.GATConv(in_channels,
+                                 out_channels,
+                                 num_heads=kwargs.get('heads', 1))
+        elif "PyG" in self.graph_type or "COO" in self.graph_type:
+            return pygnn.GATConv(in_channels, out_channels)
         else:
-            return GATConv(in_channels, out_channels, **kwargs)
+            assert (0)
 
     def forward(self, batch):
         x = batch.x
@@ -147,93 +155,24 @@ class GAT(GNN):
         return x.log_softmax(dim=-1)
 
 
-class MLP(torch.nn.Module):
+class MLP(GNN):
 
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout, graph_type, config):
-        super(MLP, self).__init__()
-        self.graph_type = graph_type
-        self.lins = torch.nn.ModuleList()
-        self.lins.append(torch.nn.Linear(in_channels, hidden_channels))
-        self.bns = torch.nn.ModuleList()
-        self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
-        for _ in range(num_layers - 2):
-            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
-            self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
-        self.lins.append(torch.nn.Linear(hidden_channels, out_channels))
-
-        self.dropout = dropout
-
-    def reset_parameters(self):
-        for lin in self.lins:
-            lin.reset_parameters()
-        for bn in self.bns:
-            bn.reset_parameters()
-
-    def forward(self, batch):
-        x = batch.x
-        for i, lin in enumerate(self.lins[:-1]):
-            x = lin(x)
-            x = self.bns[i](x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.lins[-1](x)
-        return torch.log_softmax(x, dim=-1)
+    def init_conv(self, in_channels, out_channels):
+        return torch.nn.Linear(in_channels, out_channels)
 
 
-class GIN(torch.nn.Module):
+class GIN(GNN):
 
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout, graph_type, config):
-        super(GIN, self).__init__()
-
-        self.convs = torch.nn.ModuleList()
-        self.graph_type = graph_type
+    def init_conv(self, in_channels, out_channels, **kwargs):
         if "CSR" in self.graph_type:
-            self.convs.append(MyGINConv(in_channels, hidden_channels))
+            return MyGINConv(in_channels, out_channels)
+        elif "DGL" in self.graph_type:
+            return dglnn.GINConv(torch.nn.Linear(in_channels, out_channels),
+                                 aggregator_type='mean')
+        elif "PyG" in self.graph_type or "COO" in self.graph_type:
+            return pygnn.GINConv(torch.nn.Linear(in_channels, out_channels))
         else:
-            self.convs.append(GINConv(in_channels, hidden_channels))
-        self.bns = torch.nn.ModuleList()
-        self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
-        for _ in range(num_layers - 2):
-            if "CSR" in self.graph_type:
-                self.convs.append(MyGINConv(hidden_channels, hidden_channels))
-            else:
-                self.convs.append(GINConv(hidden_channels, hidden_channels))
-            self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
-        if "CSR" in self.graph_type:
-            self.convs.append(MyGINConv(hidden_channels, out_channels))
-        else:
-            self.convs.append(GINConv(hidden_channels, out_channels))
-        self.dropout = dropout
-        self.num_layers = num_layers
-
-    def reset_parameters(self):
-        for conv in self.convs:
-            conv.reset_parameters()
-        for bn in self.bns:
-            bn.reset_parameters()
-
-    def forward(self, batch):
-        x = batch.x
-        for i, conv in enumerate(self.convs[:-1]):
-            if "CSR" in self.graph_type:
-                x = conv(
-                    x, batch.ptr, batch.idx,
-                    batch.num_node_in_layer[self.num_layers - 1 - i]
-                    if self.graph_type == "CSR_Layer" else 0)
-            else:
-                x = conv(x, batch.edge_index)
-            x = self.bns[i](x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        if "CSR" in self.graph_type:
-            x = self.convs[-1](x, batch.ptr, batch.idx,
-                               batch.num_node_in_layer[0]
-                               if self.graph_type == "CSR_Layer" else 0)
-        else:
-            x = self.convs[-1](x, batch.edge_index)
-        return x.log_softmax(dim=-1)
+            assert (0)
 
 
 class RGCN_CSR_Layer(torch.nn.Module):
@@ -292,3 +231,45 @@ class RGCN_CSR_Layer(torch.nn.Module):
                                batch.num_node_in_layer[0],
                                batch.num_node_in_layer[1])
         return x.log_softmax(dim=-1)
+
+
+graph_type_dict = {
+    "cxg": "CSR_Layer",
+    "dgl": "DGL",
+    "pyg": "PyG",
+}
+
+model_dict = {
+    "gcn": GCN,
+    "gat": GAT,
+    "mlp": MLP,
+    "gin": GIN,
+    "rgcn": RGCN_CSR_Layer,
+    "sage": SAGE,
+}
+
+
+def get_model(config):
+    in_channel = config.dl.dataset.feature_dim
+    out_channel = config.dl.dataset.num_classes
+    hidden_channel = config.train.model.hidden_dim
+    num_layers = config.train.model.num_layers
+    dropout = config.train.model.dropout
+    graph_type = graph_type_dict[config.dl.type.lower()]
+    if "gat" in config.train.model.type.lower():
+        heads = config.train.model.get('heads', 1)
+        concat = config.train.model.get('concat', True)
+        model = model_dict[config.train.model.type.lower()](in_channel,
+                                                            hidden_channel,
+                                                            out_channel,
+                                                            num_layers,
+                                                            dropout,
+                                                            graph_type,
+                                                            config,
+                                                            heads=heads,
+                                                            concat=concat)
+    else:
+        model = model_dict[config.train.model.type.lower()](
+            in_channel, hidden_channel, out_channel, num_layers, dropout,
+            graph_type, config)
+    return model

@@ -11,4 +11,6 @@ def compare(output1, output2):
 
 
 def prof(task_name, method, func):
-    print(f"{task_name} {method}:", triton.testing.do_bench(func))
+    output = triton.testing.do_bench(func)
+    print(f"{task_name} {method}:", output)
+    return output
