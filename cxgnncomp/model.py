@@ -255,7 +255,7 @@ def get_model(config):
     hidden_channel = config.train.model.hidden_dim
     num_layers = config.train.model.num_layers
     dropout = config.train.model.dropout
-    graph_type = graph_type_dict[config.dl.type.lower()]
+    graph_type = graph_type_dict[config.train.type.lower()]
     if "gat" in config.train.model.type.lower():
         heads = config.train.model.get('heads', 1)
         concat = config.train.model.get('concat', True)
