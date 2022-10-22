@@ -105,33 +105,6 @@ def preprocess(ptr, idx):
     target2 = to_torch_cuda(target2)
     return new_ptr1, new_idx1, new_ptr2, new_idx2, new_idx1_unique, new_idx2_unique, target1, target2
 
-    break_point = ptr.shape[0] // 2
-    half_ptr1 = ptr[:break_point]
-    half_idx1 = idx[:ptr[break_point]]
-    half_ptr2 = ptr[break_point:] - ptr[break_point]
-    half_idx2 = idx[ptr[break_point]:]
-    cnt = 0
-    mapping = {}
-    cnt_mapping = {}
-    mmax = 0
-    for item in half_idx2:
-        item = item.item()
-        if item in mapping:
-            cnt_mapping[item] += 1
-            if cnt_mapping[item] > mmax:
-                mmax = cnt_mapping[item]
-        else:
-            mapping[item] = cnt
-            cnt_mapping[item] = 1
-            cnt += 1
-    print(cnt)
-    print(half_idx2.shape)
-    print(mmax)
-    for i in range(half_idx2.shape[0]):
-        half_idx2[i] = mapping[half_idx2[i].item()]
-    half_idx2_unique = torch.unique(half_idx2)
-    prep = torch.index_select(x, 0, half_idx2_unique)
-
 
 if __name__ == "__main__":
     x, ptr, idx, b = prepare_data()

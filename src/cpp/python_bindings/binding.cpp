@@ -15,11 +15,11 @@ void init_compute(py::module &m) {
   m.def("aggr_rel", &aggr_rel, "");
   m.def("aggr_rel_direct", &aggr_rel_direct, "");
   m.def("gather", &gather, "gather");
-  m.def("get_graph_structure_score", &get_graph_structure_score, "");
   m.def("edge_attention", &edge_softmax_forward, "ptr"_a, "idx"_a, "att_dst"_a,
         "att_src"_a, "num_edge"_a, "relu_l"_a, "Edge attention");
   m.def("edge_value_degree", &edge_value_degree, "ptr"_a, "num_dst"_a,
         "num_edge"_a, "Edge value degree");
+  m.def("selective_aggr", &selective_sage_sum_forward, "selective aggr");
 }
 
 PYBIND11_MODULE(cxgnncomp_backend, m) {

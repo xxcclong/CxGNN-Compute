@@ -601,7 +601,8 @@ torch::Tensor AggrRelDirectFunction::forward(
   // weight shape = [rel, in_feat, out_feat]
   int feat_len = input.sizes()[1];
   int out_feat_len = weights.sizes()[2];
-  ASSERT(feat_len == weights.sizes()[1]);
+  ASSERTWITH(feat_len == weights.sizes()[1], "feat_len weight size {} {}",
+             feat_len, weights.sizes()[1]);
   ASSERT(feat_len % 32 == 0);
   ASSERT(out_feat_len % 32 == 0);
   ASSERT(input.device().index() >= 0);
@@ -680,41 +681,18 @@ torch::Tensor gather(torch::Tensor input /* O(E) */,
   return GatherFunction::apply(input, dest, num_node);
 }
 
-__global__ void get_graph_structure_score_kernel(Index *ptr, Index *idx,
-                                                 Index *output, Index ptr_size,
-                                                 Index num_seed) {
-  int lane = threadIdx.x & 31;
-  int row =
-      (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);  // center node id
-  if (row >= ptr_size) return;
-  if (row < num_seed) output[row] = 1;
-  if (output[row] == 0) return;
-  Index begin = ptr[row], end = ptr[row + 1], num_neighbor = end - begin;
-#pragma unroll
-  for (Index i = begin + lane; i < end; i += 32) {
-    Index nodeid = idx[i];
-    if (output[nodeid] == 0) output[nodeid] = output[row] * num_neighbor;
-  }
-}
-
-torch::Tensor get_graph_structure_score(torch::Tensor ptr, torch::Tensor idx,
-                                        Index num_node, Index num_seed,
-                                        int num_layer) {
-  auto output = ptr.new_zeros({num_node});
+void selective_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
+                                Tensor mask, Tensor output, int num_node) {
+  int feat_len = input.sizes().back();
   int block_size = 512;
-  int num_per_block = block_size / 32;
-  Index ptr_size = ptr.sizes()[0] - 1;
-  for (int i = 0; i < num_layer; ++i) {
-    get_graph_structure_score_kernel<<<
-        (ptr_size + num_per_block - 1) / num_per_block, block_size>>>(
-        ptr.data<Index>(), idx.data<Index>(), output.data<Index>(), ptr_size,
-        num_seed);
-  }
-  return output;
+  dim3 grid, block;
+  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
+  block_size = std::max(block_size, ceil_feat_len);
+  grid.x = (num_node + (block_size / ceil_feat_len) - 1) /
+           (block_size / ceil_feat_len);
+  block.y = ceil_feat_len / 32;
+  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
+  selective_aggr<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
+                                  input.data<float>(), output.data<float>(),
+                                  mask.data<bool>(), num_node, feat_len);
 }
-
-// torch::Tensor sage_sum_target_forward(torch::Tensor input, torch::Tensor ptr,
-// torch::Tensor idx,
-//                                       torch::Tensor target, int num_node) {
-//   return AggrWithTargetFunction::apply(input, ptr, idx, target, num_node);
-// }

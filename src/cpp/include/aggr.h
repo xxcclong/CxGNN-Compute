@@ -69,8 +69,8 @@ Tensor aggr_rel(Tensor input, Tensor ptr, Tensor idx, Tensor etype,
 Tensor aggr_rel_direct(Tensor input, Tensor ptr, Tensor idx, Tensor weights,
                        Tensor etype, Index num_node, int num_rel);
 
-Tensor get_graph_structure_score(Tensor ptr, Tensor idx, Index num_node,
-                                 Index num_seed, int num_layer);
+void selective_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
+                                  Tensor mask, Tensor output, int num_node);
 
 // Tensor sage_sum_target_forward(Tensor input, Tensor ptr,
 // Tensor idx,

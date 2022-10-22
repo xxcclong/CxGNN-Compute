@@ -131,3 +131,6 @@ dmypy.json
 .vscode/
 example/outputs/*
 outputs/*
+
+new_config.yaml
+example/new_config.yaml
