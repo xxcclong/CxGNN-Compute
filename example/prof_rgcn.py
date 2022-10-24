@@ -33,19 +33,53 @@ if __name__ == "__main__":
     transposed_weights = weights.transpose(1, 2).contiguous()
     print(x.shape, transposed_weights.shape)
     # print(batch.num_node_in_layer, batch.num_edge_in_layer)
-    output1 = cxgc.rgcn_triton(x, ptr, idx, rels, weights, num_center)
+    output1 = cxgc.rgcn_triton(x, ptr, idx, rels, transposed_weights,
+                               num_center)
     # output2 = cxgc.rgcn_scatter(x, ptr, idx, rels, weights, num_center)
-    output2 = cxgc.aggr_rel_direct(x, ptr, idx, transposed_weights, rels,
-                                   num_center, num_rel)
+    output2 = cxgc.aggr_rel_direct(x, ptr, idx, weights, rels, num_center,
+                                   num_rel)
     output3 = cxgc.rgcn_full_mm(x, ptr, idx, rels, weights, num_center,
                                 num_rel)
+    output4 = cxgc.rgcn_full_mm2(x, ptr, idx, rels, weights, num_center,
+                                 num_rel)
     compare(output1, output2)
     compare(output1, output3)
-    prof("rgcn", "triton",
-         lambda: cxgc.rgcn_triton(x, ptr, idx, rels, weights, num_center))
-    prof(
-        "rgcn", "manual", lambda: cxgc.aggr_rel_direct(
-            x, ptr, idx, transposed_weights, rels, num_center, num_rel))
+    compare(output1, output4)
+    # prof(
+    #     "rgcn", "triton", lambda: cxgc.rgcn_triton(
+    #         x, ptr, idx, rels, transposed_weights, num_center))
+    # prof(
+    #     "rgcn", "manual", lambda: cxgc.aggr_rel_direct(
+    #         x, ptr, idx, weights, rels, num_center, num_rel))
     prof(
         "rgcn", "full_mm", lambda: cxgc.rgcn_full_mm(
             x, ptr, idx, rels, weights, num_center, num_rel))
+    prof(
+        "rgcn", "just aggr", lambda: cxgc.rgcn_just_aggr(
+            x, ptr, idx, rels, weights, num_center, num_rel))
+    prof(
+        "rgcn", "full_mm2", lambda: cxgc.rgcn_full_mm2(
+            x, ptr, idx, rels, weights, num_center, num_rel))
+
+    # num_base = 2
+    # bmm_weights = torch.randn([128, num_base, 128],
+    #                           dtype=torch.float32,
+    #                           device='cuda')
+    # comp = torch.randn([num_rel, num_base], dtype=torch.float32, device='cuda')
+    # prof(
+    #     "rgcn", "bmm", lambda: cxgc.rgcn_full_bmm(
+    #         x, ptr, idx, rels, bmm_weights, comp, num_center, num_rel))
+
+    output = cxgc.rel_schedule(ptr.cpu(), idx.cpu(), rels.cpu(),
+                               batch["num_node_in_layer"], num_rel)
+    for i in range(0, len(output) - 1):
+        output[i] = output[i].cuda()
+    comp_output1 = cxgc.rgcn_just_aggr_prune(x, output, num_center, num_rel)
+    comp_output2 = cxgc.rgcn_just_aggr(x, ptr, idx, rels, weights, num_center,
+                                       num_rel)
+    compare(comp_output1, comp_output2)
+    prof("rgcn", "just aggr prune",
+         lambda: cxgc.rgcn_just_aggr_prune(x, output, num_center, num_rel))
+
+    cxgc.prof("spmm", "manual",
+              lambda: cxgc.sage_sum_forward(x, ptr, idx, num_center))

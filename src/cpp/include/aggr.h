@@ -70,7 +70,10 @@ Tensor aggr_rel_direct(Tensor input, Tensor ptr, Tensor idx, Tensor weights,
                        Tensor etype, Index num_node, int num_rel);
 
 void selective_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
-                                  Tensor mask, Tensor output, int num_node);
+                                Tensor mask, Tensor output, int num_node);
+
+void target_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
+                             Tensor targets, Tensor output, int num_node);
 
 // Tensor sage_sum_target_forward(Tensor input, Tensor ptr,
 // Tensor idx,

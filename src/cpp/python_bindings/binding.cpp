@@ -2,6 +2,7 @@
 
 #include "aggr.h"
 #include "edge_softmax.h"
+#include "schedule.h"
 namespace py = pybind11;
 using namespace pybind11::literals;
 
@@ -20,6 +21,8 @@ void init_compute(py::module &m) {
   m.def("edge_value_degree", &edge_value_degree, "ptr"_a, "num_dst"_a,
         "num_edge"_a, "Edge value degree");
   m.def("selective_aggr", &selective_sage_sum_forward, "selective aggr");
+  m.def("target_aggr", &target_sage_sum_forward, "target aggr");
+  m.def("rel_schedule", &rel_schedule, "rel schedule");
 }
 
 PYBIND11_MODULE(cxgnncomp_backend, m) {

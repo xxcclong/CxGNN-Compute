@@ -69,3 +69,6 @@ __global__ void gen_bwd_sum_edge_value_multi_head_edge_grad(
 
 __global__ void selective_aggr(Index *ptr, Index *idx, float *vin, float *vout,
                                bool *mask, int num_node, int INFEATURE);
+
+__global__ void target_aggr(Index *ptr, Index *idx, Index *targets, float *vin,
+                            float *vout, int num_node, int INFEATURE);

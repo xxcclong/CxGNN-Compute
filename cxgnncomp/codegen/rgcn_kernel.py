@@ -96,6 +96,35 @@ def rgcn_scatter(x: torch.Tensor, ptr: torch.Tensor, idx: torch.Tensor,
     return output
 
 
+def rgcn_just_aggr(x: torch.Tensor, ptr: torch.Tensor, idx: torch.Tensor,
+                   rel: torch.Tensor, weights: torch.Tensor, num_nodes: int,
+                   num_rel: int):
+    output = torch.zeros((num_nodes, weights.shape[-1]),
+                         dtype=torch.float32,
+                         device=x.device)
+    for i in range(num_rel):
+        cxgnncomp_backend.selective_aggr(x, ptr, idx, (rel == i), output,
+                                         num_nodes)
+    return output
+
+
+def rgcn_just_aggr_prune(x: torch.Tensor, meta: list, num_nodes: int,
+                         num_rel: int):
+    output = torch.zeros((num_nodes, x.shape[1]),
+                         dtype=torch.float32,
+                         device=x.device)
+    for i in range(num_rel):
+        cxgnncomp_backend.target_aggr(
+            x,
+            meta[3 * i],
+            meta[3 * i + 1],
+            meta[3 * i + 2],
+            output,
+            meta[3 * i + 2].shape[0],
+        )
+    return output
+
+
 def rgcn_full_mm(x: torch.Tensor, ptr: torch.Tensor, idx: torch.Tensor,
                  rel: torch.Tensor, weights: torch.Tensor, num_nodes: int,
                  num_rel: int):
@@ -104,5 +133,41 @@ def rgcn_full_mm(x: torch.Tensor, ptr: torch.Tensor, idx: torch.Tensor,
                          device=x.device)
     for i in range(num_rel):
         mm_output = torch.mm(x, weights[i])
-        cxgnncomp_backend.selective_aggr(mm_output, ptr, idx, rel == i, output)
+        cxgnncomp_backend.selective_aggr(mm_output, ptr, idx, (rel == i),
+                                         output, num_nodes)
+    return output
+
+
+def rgcn_full_mm2(x: torch.Tensor, ptr: torch.Tensor, idx: torch.Tensor,
+                  rel: torch.Tensor, weights: torch.Tensor, num_nodes: int,
+                  num_rel: int):
+    output = torch.zeros((num_nodes, weights.shape[-1]),
+                         dtype=torch.float32,
+                         device=x.device)
+    for i in range(num_rel):
+        aggr_output = torch.zeros((num_nodes, weights.shape[-2]),
+                                  dtype=torch.float32,
+                                  device=x.device)
+        cxgnncomp_backend.selective_aggr(x, ptr, idx, (rel == i), aggr_output,
+                                         num_nodes)
+        output += torch.mm(aggr_output, weights[i])
+    return output
+
+
+def rgcn_full_bmm(x: torch.Tensor, ptr: torch.Tensor, idx: torch.Tensor,
+                  rel: torch.Tensor, weights: torch.Tensor, comp: torch.Tensor,
+                  num_nodes: int, num_rel: int):
+    output = torch.zeros((num_nodes, weights.shape[-1]),
+                         dtype=torch.float32,
+                         device=x.device)
+    tmp = torch.mm(x, weights.view(weights.shape[0], -1)).reshape(
+        -1,
+        weights.shape[1],
+    ).contiguous()
+    for i in range(num_rel):
+        # mm_output = torch.einsum("b,njb->nj", comp[0], tmp)
+        mm_output = torch.mm(tmp, comp[i].view(-1,
+                                               1)).view(-1, weights.shape[2])
+        cxgnncomp_backend.selective_aggr(mm_output, ptr, idx, (rel == i),
+                                         output, num_nodes)
     return output

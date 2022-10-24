@@ -1,6 +1,8 @@
 #pragma once
 #include <cuda_runtime.h>
 #include <stdint.h>
+#include <torch/extension.h>
+#include <torch/torch.h>
 
 #include "Yaml.hpp"
 #include "spdlog/spdlog.h"
@@ -31,3 +33,6 @@ using Index = int64_t;
       abort();                                              \
     }                                                       \
   } while (0)
+
+const torch::TensorOptions int64_option =
+    torch::TensorOptions().dtype(torch::kInt64).requires_grad(false);
