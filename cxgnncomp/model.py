@@ -13,22 +13,29 @@ class GNN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
                  dropout, graph_type, config, **kwargs):
         super().__init__()
-
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
         self.graph_type = graph_type
+        self.bns = torch.nn.ModuleList()
+        self.num_layers = num_layers
+        for _ in range(self.num_layers - 1):
+            self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
+        self.dropout = dropout
+        self.init_convs(**kwargs)
+
+    def init_convs(self, **kwargs):
         self.convs = torch.nn.ModuleList()
         self.convs.append(
-            self.init_conv(in_channels, hidden_channels, **kwargs))
-        self.bns = torch.nn.ModuleList()
-        self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
-        for _ in range(num_layers - 2):
+            self.init_conv(self.in_channels, self.hidden_channels, **kwargs))
+        for _ in range(self.num_layers - 2):
             self.convs.append(
-                self.init_conv(hidden_channels, hidden_channels, **kwargs))
-            self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
-        if num_layers > 1:
+                self.init_conv(self.hidden_channels, self.hidden_channels,
+                               **kwargs))
+        if self.num_layers > 1:
             self.convs.append(
-                self.init_conv(hidden_channels, out_channels, **kwargs))
-        self.num_layers = num_layers
-        self.dropout = dropout
+                self.init_conv(self.hidden_channels, self.out_channels,
+                               **kwargs))
 
     def init_conv(self, in_channels, out_channels, **kwargs):
         raise NotImplementedError
