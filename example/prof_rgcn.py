@@ -20,7 +20,7 @@ def prepare_data():
 
 
 if __name__ == "__main__":
-    num_rel = 7
+    num_rel = 128
     x, ptr, idx, batch = prepare_data()
     num_center = ptr.shape[0] - 1
     rels = torch.randint(0,
@@ -70,16 +70,22 @@ if __name__ == "__main__":
     #     "rgcn", "bmm", lambda: cxgc.rgcn_full_bmm(
     #         x, ptr, idx, rels, bmm_weights, comp, num_center, num_rel))
 
-    output = cxgc.rel_schedule(ptr.cpu(), idx.cpu(), rels.cpu(),
-                               batch["num_node_in_layer"], num_rel)
-    for i in range(0, len(output) - 1):
-        output[i] = output[i].cuda()
-    comp_output1 = cxgc.rgcn_just_aggr_prune(x, output, num_center, num_rel)
+    meta = cxgc.rel_schedule(ptr.cpu(), idx.cpu(), rels.cpu(),
+                             batch["num_node_in_layer"], num_rel)
+    for i in range(0, len(meta) - 1):
+        meta[i] = meta[i].cuda()
+    comp_output1 = cxgc.rgcn_just_aggr_prune(x, meta, num_center, num_rel)
     comp_output2 = cxgc.rgcn_just_aggr(x, ptr, idx, rels, weights, num_center,
                                        num_rel)
     compare(comp_output1, comp_output2)
     prof("rgcn", "just aggr prune",
-         lambda: cxgc.rgcn_just_aggr_prune(x, output, num_center, num_rel))
+         lambda: cxgc.rgcn_just_aggr_prune(x, meta, num_center, num_rel))
 
     cxgc.prof("spmm", "manual",
               lambda: cxgc.sage_sum_forward(x, ptr, idx, num_center))
+
+    comp_output3 = cxgc.rgcn_prune_mm(x, weights, meta, num_center, num_rel)
+    compare(output1, comp_output3)
+
+    prof("rgcn", "full prune",
+         lambda: cxgc.rgcn_prune_mm(x, weights, meta, num_center, num_rel))

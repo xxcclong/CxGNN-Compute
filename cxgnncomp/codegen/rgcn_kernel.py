@@ -154,6 +154,24 @@ def rgcn_full_mm2(x: torch.Tensor, ptr: torch.Tensor, idx: torch.Tensor,
     return output
 
 
+def rgcn_prune_mm(x: torch.Tensor, weights: torch.Tensor, meta: list,
+                  num_nodes: int, num_rel: int):
+    outputs = []
+    for i in range(num_rel):
+        outputs.append(
+            cxgnncomp_backend.sage_sum_forward(x, meta[3 * i], meta[3 * i + 1],
+                                               0))
+    mm_outputs = []
+    for it, item in enumerate(outputs):
+        mm_outputs.append(torch.mm(item, weights[it]))
+    comp_output = torch.zeros((num_nodes, weights.shape[-1]),
+                              dtype=torch.float32,
+                              device=x.device)
+    for i in range(num_rel):
+        comp_output.index_add_(0, meta[3 * i + 2], mm_outputs[i])
+    return comp_output
+
+
 def rgcn_full_bmm(x: torch.Tensor, ptr: torch.Tensor, idx: torch.Tensor,
                   rel: torch.Tensor, weights: torch.Tensor, comp: torch.Tensor,
                   num_nodes: int, num_rel: int):
