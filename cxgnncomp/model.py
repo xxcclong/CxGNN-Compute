@@ -119,6 +119,43 @@ class GCN(GNN):
             assert (0)
 
 
+class RGCN(GNN):
+
+    def init_conv(self, in_channels, out_channels, **kwargs):
+        print(self.graph_type)
+        self.num_rel = kwargs["num_rel"]
+        if "CSR" in self.graph_type:
+            assert False, "RGCN is not supported in CSR format"
+            return MyRGCNConv(in_channels, out_channels)
+        elif "DGL" in self.graph_type:
+            return dglnn.RelGraphConv(in_channels,
+                                      out_channels,
+                                      num_rels=kwargs["num_rel"])
+        elif "PyG" in self.graph_type or "COO" in self.graph_type:
+            return pygnn.RGCNConv(in_channels,
+                                  out_channels,
+                                  num_relations=kwargs["num_rel"])
+        else:
+            assert (0)
+
+    def forward_dgl(self, blocks, x):
+        for layer, conv in enumerate(self.convs[:-1]):
+            etypes = torch.randint(0,
+                                   self.num_rel,
+                                   (blocks[layer].number_of_edges(), ),
+                                   device=x.device)
+            x = conv(blocks[layer], x, etypes)
+            x = self.bns[layer](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+
+        etypes = torch.randint(0,
+                               self.num_rel, (blocks[-1].number_of_edges(), ),
+                               device=x.device)
+        x = self.convs[-1](blocks[-1], x, etypes)
+        return x.log_softmax(dim=-1)
+
+
 class GAT(GNN):
 
     def init_conv(self, in_channels, out_channels, **kwargs):
@@ -137,7 +174,7 @@ class GAT(GNN):
         else:
             assert (0)
 
-    def forward(self, batch):
+    def forward_cxg(self, batch):
         x = batch.x
         assert self.graph_type == "CSR_Layer"
         for i, conv in enumerate(self.convs[:-1]):
@@ -251,7 +288,7 @@ model_dict = {
     "gat": GAT,
     "mlp": MLP,
     "gin": GIN,
-    "rgcn": RGCN_CSR_Layer,
+    "rgcn": RGCN,
     "sage": SAGE,
 }
 
@@ -275,6 +312,16 @@ def get_model(config):
                                                             config,
                                                             heads=heads,
                                                             concat=concat)
+    elif "rgcn" in config.train.model.type.lower():
+        rel = int(config.train.model['num_rel'])
+        model = model_dict[config.train.model.type.lower()](in_channel,
+                                                            hidden_channel,
+                                                            out_channel,
+                                                            num_layers,
+                                                            dropout,
+                                                            graph_type,
+                                                            config,
+                                                            num_rel=rel)
     else:
         model = model_dict[config.train.model.type.lower()](
             in_channel, hidden_channel, out_channel, num_layers, dropout,

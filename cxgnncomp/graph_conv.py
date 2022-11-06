@@ -81,6 +81,26 @@ class MyGINConv(torch.nn.Module):
         return out
 
 
+# class MyRGCNConv(torch.nn.Module):
+
+#     def __init__(self, in_channels, hidden_channels, num_rel):
+#         super(MyRGCNConv, self).__init__()
+#         self.in_channels = in_channels
+#         self.hidden_channels = hidden_channels
+#         self.num_rel = num_rel
+#         self.linear = torch.nn.Parameter(
+#             torch.randn(num_rel, in_channels, hidden_channels))
+#         self.register_parameter("rel_weight", self.linear)
+#         self.reset_parameters()
+
+#     def reset_parameters(self):
+#         self.linear.reset_parameters()
+#         pass
+
+#     def forward(self, x, ptr, idx, edge_types, num_node, num_used_node):
+#         return out
+
+
 class MyRGCNConvNaive(torch.nn.Module):
 
     def __init__(self, in_channels, hidden_channels, num_rel):
