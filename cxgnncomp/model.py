@@ -3,7 +3,7 @@ import torch.nn.functional as F
 # from torch_geometric.nn import GCNConv, SAGEConv, GINConv, GATConv as  PyG_GCNConv, PyG_SAGEConv, PyG_GINConv, PyG_GATConv
 import torch_geometric.nn as pygnn
 import dgl.nn.pytorch.conv as dglnn
-from .graph_conv import MyGATConv, MyGCNConv, MyRGCNConvNaive, MyRGCNConvOpt1, MyRGCNConvOpt2, MySageConv, MyGINConv
+from .graph_conv import MyGATConv, MyGCNConv, MyRGCNConv, MyRGCNConvNaive, MyRGCNConvOpt1, MyRGCNConvOpt2, MySageConv, MyGINConv
 # import torch.autograd.profiler as profiler
 # from profile import gpu_profile
 
@@ -91,7 +91,6 @@ class GNN(torch.nn.Module):
 
 
 class SAGE(GNN):
-    noise = False
 
     def init_conv(self, in_channels, out_channels, **kwargs):
         if "CSR" in self.graph_type:
@@ -99,7 +98,7 @@ class SAGE(GNN):
         elif "DGL" in self.graph_type:
             return dglnn.SAGEConv(in_channels,
                                   out_channels,
-                                  aggregator_type="pool")
+                                  aggregator_type="mean")
         elif "PyG" in self.graph_type or "COO" in self.graph_type:
             return pygnn.SAGEConv(in_channels, out_channels)
         else:
@@ -119,14 +118,26 @@ class GCN(GNN):
             assert (0)
 
 
+# class GCN2(GNN):
+#     def init_conv(self, in_channels, out_channels, **kwargs):
+#         if "CSR" in self.graph_type:
+#             raise NotImplementedError
+#         elif "DGL" in self.graph_type:
+#             return dglnn.GCN2Conv(in_channels, out_channels)
+#         elif "PyG" in self.graph_type or "COO" in self.graph_type:
+#             raise NotImplementedError
+#         else:
+#             assert (0)
+
+
 class RGCN(GNN):
 
     def init_conv(self, in_channels, out_channels, **kwargs):
-        print(self.graph_type)
         self.num_rel = kwargs["num_rel"]
         if "CSR" in self.graph_type:
-            assert False, "RGCN is not supported in CSR format"
-            return MyRGCNConv(in_channels, out_channels)
+            return MyRGCNConv(in_channels,
+                              out_channels,
+                              num_rel=kwargs["num_rel"])
         elif "DGL" in self.graph_type:
             return dglnn.RelGraphConv(in_channels,
                                       out_channels,
@@ -137,6 +148,30 @@ class RGCN(GNN):
                                   num_relations=kwargs["num_rel"])
         else:
             assert (0)
+
+    def forward_cxg(self, batch):
+        x = batch.x
+        for i, conv in enumerate(self.convs[:-1]):
+            if self.graph_type == "CSR_Layer":
+                num_node = batch.num_node_in_layer[self.num_layers - 1 - i]
+            else:
+                num_node = 0
+            etypes = torch.randint(
+                0,
+                self.num_rel,
+                (batch.num_edge_in_layer[self.num_layers - 1 - i], ),
+                device=x.device)
+            x = conv(x, batch.ptr, batch.idx, etypes, num_node)
+            x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        etypes = torch.randint(0,
+                               self.num_rel, (batch.num_edge_in_layer[0], ),
+                               device=x.device)
+        x = self.convs[-1](x, batch.ptr, batch.idx, etypes,
+                           batch.num_node_in_layer[0]
+                           if self.graph_type == "CSR_Layer" else 0)
+        return x.log_softmax(dim=-1)
 
     def forward_dgl(self, blocks, x):
         for layer, conv in enumerate(self.convs[:-1]):

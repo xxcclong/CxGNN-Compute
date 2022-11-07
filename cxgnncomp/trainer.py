@@ -200,15 +200,17 @@ class Trainer:
             log.info(f"train-epoch {epoch} time {self.t_end - self.t_begin}")
             if epoch >= self.eval_begin:
                 if self.type == "dgl" and self.load_type == "dgl":
-                    self.dgl_eval_epoch()
+                    self.dgl_eval_epoch("val")
+                    self.dgl_eval_epoch("test")
                 elif self.type == "dgl" and self.load_type == "cxg":
-                    self.cxg_dgl_eval_epoch()
+                    self.cxg_dgl_eval_epoch("val")
+                    self.cxg_dgl_eval_epoch("test")
                 elif self.type == "cxg":
                     self.cxg_eval_epoch("val")
+                    self.cxg_eval_epoch("test")
                 log.info(
                     f"val-epoch {epoch} time {self.t_end - self.t_begin} loss {self.loss} metric {self.metric}"
                 )
-                self.cxg_eval_epoch("test")
                 log.info(
                     f"test-epoch {epoch} time {self.t_end - self.t_begin} loss {self.loss} metric {self.metric}"
                 )

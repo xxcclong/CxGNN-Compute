@@ -20,9 +20,10 @@ void init_compute(py::module &m) {
         "att_src"_a, "num_edge"_a, "relu_l"_a, "Edge attention");
   m.def("edge_value_degree", &edge_value_degree, "ptr"_a, "num_dst"_a,
         "num_edge"_a, "Edge value degree");
-  m.def("selective_aggr", &selective_sage_sum_forward, "selective aggr");
   m.def("target_aggr", &target_sage_sum_forward, "target aggr");
   m.def("rel_schedule", &rel_schedule, "rel schedule");
+  m.def("selective_aggr", &selective_aggr_fwd, "selective aggr");
+  m.def("selective_aggr_bwd", &selective_aggr_bwd, "selective aggr");
 }
 
 PYBIND11_MODULE(cxgnncomp_backend, m) {

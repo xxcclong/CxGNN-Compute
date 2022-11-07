@@ -2,7 +2,7 @@ import torch
 from torch.nn import Parameter
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.inits import glorot
-from cxgnncomp_backend import edge_attention, sage_sum_forward_edge_value, gather, sage_sum_forward, aggr_rel, sage_mean_forward
+from cxgnncomp_backend import edge_attention, sage_sum_forward_edge_value, gather, sage_sum_forward, aggr_rel, sage_mean_forward, selective_aggr, selective_aggr_bwd
 
 torch.fx.wrap("edge_attention")
 torch.fx.wrap("sage_sum_forward_edge_value")
@@ -80,25 +80,54 @@ class MyGINConv(torch.nn.Module):
         out = self.nn(out)
         return out
 
+class RGCNOP(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, weights, ptr, idx, rel, num_center):
+        ctx.save_for_backward(x, weights, ptr, idx, rel)
+        num_rel = weights.shape[0]
+        output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
+        for i in range(num_rel):
+            transformed_x = torch.mm(x, weights[i])
+            selective_aggr(transformed_x, ptr, idx, (rel == i),
+                                         output, num_center)
+        return output
 
-# class MyRGCNConv(torch.nn.Module):
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, weights, ptr, idx, rel = ctx.saved_tensors
+        num_rel = weights.shape[0]
+        grad_x = torch.zeros_like(x)
+        grad_weights = []
+        num_center = grad_out.shape[0]
+        num_node = x.shape[0]
+        x_t = x.transpose(0, 1)
+        for i in range(num_rel):
+            grad_selective = torch.zeros([num_node, grad_out.shape[-1]], device=x.device)
+            selective_aggr_bwd(grad_out, ptr, idx, (rel == i), grad_selective, num_center) # pass grad through selective_aggr
+            grad_x += torch.mm(grad_selective, weights[i].transpose(0,1))
+            grad_weights.append(torch.mm(x_t, grad_selective))
+        return grad_x, torch.stack(grad_weights), None, None, None, None
 
-#     def __init__(self, in_channels, hidden_channels, num_rel):
-#         super(MyRGCNConv, self).__init__()
-#         self.in_channels = in_channels
-#         self.hidden_channels = hidden_channels
-#         self.num_rel = num_rel
-#         self.linear = torch.nn.Parameter(
-#             torch.randn(num_rel, in_channels, hidden_channels))
-#         self.register_parameter("rel_weight", self.linear)
-#         self.reset_parameters()
 
-#     def reset_parameters(self):
-#         self.linear.reset_parameters()
-#         pass
+class MyRGCNConv(torch.nn.Module):
 
-#     def forward(self, x, ptr, idx, edge_types, num_node, num_used_node):
-#         return out
+    def __init__(self, in_channels, hidden_channels, num_rel):
+        super(MyRGCNConv, self).__init__()
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.num_rel = num_rel
+        self.linear = torch.nn.Parameter(
+            torch.randn(num_rel, in_channels, hidden_channels))
+        self.register_parameter("rel_weight", self.linear)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # self.linear.reset_parameters()
+        pass
+
+    def forward(self, x, ptr, idx, edge_types, num_node):
+        out = RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
+        return out
 
 
 class MyRGCNConvNaive(torch.nn.Module):

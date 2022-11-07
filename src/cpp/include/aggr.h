@@ -47,6 +47,13 @@ class AggrRelDirectFunction : public Function<AggrRelDirectFunction> {
   static tensor_list backward(AutogradContext *ctx, tensor_list grad_outputs);
 };
 
+class SelectiveAggrFunction : public Function<SelectiveAggrFunction> {
+ public:
+  static Tensor forward(AutogradContext *ctx, Tensor input, Tensor ptr,
+                        Tensor idx, Tensor mask, Tensor output, int num_node);
+  static tensor_list backward(AutogradContext *ctx, tensor_list grad_outputs);
+};
+
 // class AggrWithTargetFunction : public Function<AggrWithTargetFunction> {
 // public:
 //   static Tensor forward(AutogradContext *ctx, Tensor input,
@@ -69,8 +76,9 @@ Tensor aggr_rel(Tensor input, Tensor ptr, Tensor idx, Tensor etype,
 Tensor aggr_rel_direct(Tensor input, Tensor ptr, Tensor idx, Tensor weights,
                        Tensor etype, Index num_node, int num_rel);
 
-void selective_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
+void selective_aggr_fwd(Tensor input, Tensor ptr, Tensor idx,
                                 Tensor mask, Tensor output, int num_node);
+void selective_aggr_bwd(Tensor grad_output, Tensor ptr, Tensor idx, Tensor mask, Tensor computed_grad, Index num_center);
 
 void target_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
                              Tensor targets, Tensor output, int num_node);

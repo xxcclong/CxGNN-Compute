@@ -681,22 +681,6 @@ torch::Tensor gather(torch::Tensor input /* O(E) */,
   return GatherFunction::apply(input, dest, num_node);
 }
 
-void selective_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
-                                Tensor mask, Tensor output, int num_node) {
-  int feat_len = input.sizes().back();
-  int block_size = 512;
-  dim3 grid, block;
-  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
-  block_size = std::max(block_size, ceil_feat_len);
-  grid.x = (num_node + (block_size / ceil_feat_len) - 1) /
-           (block_size / ceil_feat_len);
-  block.y = ceil_feat_len / 32;
-  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
-  selective_aggr<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
-                                  input.data<float>(), output.data<float>(),
-                                  mask.data<bool>(), num_node, feat_len);
-}
-
 void target_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
                              Tensor targets, Tensor output, int num_node) {
   int feat_len = input.sizes().back();
@@ -711,4 +695,37 @@ void target_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
   target_aggr<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
                                targets.data<Index>(), input.data<float>(),
                                output.data<float>(), num_node, feat_len);
+}
+
+void selective_aggr_fwd(Tensor input, Tensor ptr, Tensor idx, Tensor mask,
+                        Tensor output, int num_node) {
+  int feat_len = input.sizes().back();
+  int block_size = 512;
+  dim3 grid, block;
+  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
+  block_size = std::max(block_size, ceil_feat_len);
+  grid.x = (num_node + (block_size / ceil_feat_len) - 1) /
+           (block_size / ceil_feat_len);
+  block.y = ceil_feat_len / 32;
+  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
+  selective_aggr_fwd_kernel<<<grid, block>>>(
+      ptr.data<Index>(), idx.data<Index>(), input.data<float>(),
+      output.data<float>(), mask.data<bool>(), num_node, feat_len);
+}
+
+void selective_aggr_bwd(Tensor grad_output, Tensor ptr, Tensor idx, Tensor mask,
+                        Tensor computed_grad, Index num_center) {
+  // computation
+  int feat_len = grad_output.sizes().back();
+  int block_size = 512;
+  dim3 grid, block;
+  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
+  block_size = std::max(block_size, ceil_feat_len);
+  grid.x = (num_center + (block_size / ceil_feat_len) - 1) /
+           (block_size / ceil_feat_len);
+  block.y = ceil_feat_len / 32;
+  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
+  selective_aggr_bwd_kernel<<<grid, block>>>(
+      ptr.data<Index>(), idx.data<Index>(), grad_output.data<float>(),
+      computed_grad.data<float>(), mask.data<bool>(), num_center, feat_len);
 }
