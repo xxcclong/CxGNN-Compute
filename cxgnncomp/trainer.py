@@ -26,6 +26,12 @@ class Trainer:
         self.t_end = 0
         self.status = "train"
         self.eval_begin = config.train.train.eval_begin
+        self.skip = config.train.skip
+        self.mode = "train"
+        self.perform_test = True
+        dataset_name = config.dl.dataset.name
+        if "mag240" in dataset_name.lower():
+            self.perform_test = False
 
     def to_dgl_block(self, batch):
         blocks = []
@@ -72,6 +78,8 @@ class Trainer:
                 loader,
                 bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
             blocks = self.to_dgl_block(batch)
+            if self.skip:
+                continue
             batch_inputs = batch.x
             batch_labels = batch.y
             batch_pred = self.model([blocks, batch_inputs])
@@ -93,6 +101,8 @@ class Trainer:
         for batch in tqdm(
                 self.loader.train_loader,
                 bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
+            if self.skip:
+                continue
             self.optimizer.zero_grad()
             out = self.model(batch)
             loss = self.loss_fn(out, batch.y)
@@ -137,22 +147,26 @@ class Trainer:
     def dgl_train_epoch(self):
         self.model.train()
         self.t_begin = time.time()
-        for (input_nodes, seeds, blocks) in tqdm(
-                self.loader.train_loader,
-                bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
-            self.optimizer.zero_grad()
-            blocks = [block.int().to(self.device) for block in blocks]
-            batch_inputs, batch_labels = self.load_subtensor(
-                self.loader.feat,
-                self.loader.graph.ndata['labels'],
-                seeds,
-                input_nodes,
-                device=self.device)
-            batch_pred = self.model([blocks, batch_inputs])
-            loss = self.loss_fn(batch_pred, batch_labels)
-            loss.backward()
-            self.optimizer.step()
-            self.scheduler.step()
+        with self.loader.train_loader.enable_cpu_affinity():
+            for (input_nodes, seeds, blocks) in tqdm(
+                    self.loader.train_loader,
+                    bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"
+            ):
+                if self.skip:
+                    continue
+                self.optimizer.zero_grad()
+                blocks = [block.int().to(self.device) for block in blocks]
+                batch_inputs, batch_labels = self.load_subtensor(
+                    self.loader.feat,
+                    self.loader.graph.ndata['labels'],
+                    seeds,
+                    input_nodes,
+                    device=self.device)
+                batch_pred = self.model([blocks, batch_inputs])
+                loss = self.loss_fn(batch_pred, batch_labels)
+                loss.backward()
+                self.optimizer.step()
+                self.scheduler.step()
         torch.cuda.synchronize()
         self.t_end = time.time()
 
@@ -191,26 +205,35 @@ class Trainer:
 
     def train(self):
         for epoch in range(self.config.train.train.num_epochs):
-            if self.type == "dgl" and self.load_type == "dgl":
+            self.mode = "train"
+            if self.type == "dgl" and "dgl" in self.load_type:
                 self.dgl_train_epoch()
             elif self.type == "dgl" and self.load_type == "cxg":
                 self.cxg_dgl_train_epoch()
             elif self.type == "cxg":
                 self.cxg_train_epoch()
-            log.info(f"train-epoch {epoch} time {self.t_end - self.t_begin}")
-            if epoch >= self.eval_begin:
-                if self.type == "dgl" and self.load_type == "dgl":
+            log.info(
+                f"{self.mode}-epoch {epoch} {self.mode}-time {self.t_end - self.t_begin}"
+            )
+            if epoch >= self.eval_begin and not self.skip:
+                self.mode = "val"
+                if self.type == "dgl" and "dgl" in self.load_type:
                     self.dgl_eval_epoch("val")
-                    self.dgl_eval_epoch("test")
                 elif self.type == "dgl" and self.load_type == "cxg":
                     self.cxg_dgl_eval_epoch("val")
-                    self.cxg_dgl_eval_epoch("test")
                 elif self.type == "cxg":
                     self.cxg_eval_epoch("val")
-                    self.cxg_eval_epoch("test")
                 log.info(
-                    f"val-epoch {epoch} time {self.t_end - self.t_begin} loss {self.loss} metric {self.metric}"
+                    f"{self.mode}-epoch {epoch} {self.mode}-time {self.t_end - self.t_begin} {self.mode}-loss {self.loss} {self.mode}-metric {self.metric}"
                 )
-                log.info(
-                    f"test-epoch {epoch} time {self.t_end - self.t_begin} loss {self.loss} metric {self.metric}"
-                )
+                if self.perform_test:
+                    self.mode = "test"
+                    if self.type == "dgl" and "dgl" in self.load_type:
+                        self.dgl_eval_epoch("test")
+                    elif self.type == "dgl" and self.load_type == "cxg":
+                        self.cxg_dgl_eval_epoch("test")
+                    elif self.type == "cxg":
+                        self.cxg_eval_epoch("test")
+                    log.info(
+                        f"{self.mode}-epoch {epoch} {self.mode}-time {self.t_end - self.t_begin} {self.mode}-loss {self.loss} {self.mode}-metric {self.metric}"
+                    )

@@ -2,7 +2,7 @@ import torch
 from torch.nn import Parameter
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.inits import glorot
-from cxgnncomp_backend import edge_attention, sage_sum_forward_edge_value, gather, sage_sum_forward, aggr_rel, sage_mean_forward, selective_aggr, selective_aggr_bwd
+from cxgnncomp_backend import edge_attention, sage_sum_forward_edge_value, gather, sage_sum_forward, aggr_rel, sage_mean_forward, selective_aggr, selective_aggr_bwd, aggr_rgcn_direct_func
 
 torch.fx.wrap("edge_attention")
 torch.fx.wrap("sage_sum_forward_edge_value")
@@ -37,19 +37,11 @@ class MySageConv(torch.nn.Module):
         if self.root_weight:
             self.lin_r.reset_parameters()
 
-    def forward(self, x, ptr, idx, num_node, noise=False):
+    def forward(self, x, ptr, idx, num_node):
         if self.mean_forward:
             out = sage_mean_forward(x, ptr, idx, num_node)
         else:
             out = x[:num_node]
-        # noise
-        if (noise):
-            a = torch.randn_like(out)
-            a.requires_grad_ = False
-            cc = out.detach()
-            so = torch.norm(cc, dim=1).reshape([cc.shape[0], 1])
-            sa = torch.norm(a, dim=1).reshape([cc.shape[0], 1])
-            out += 0.15 * a * so / sa
         out = self.lin_l(out)
         if self.root_weight:
             if (num_node != 0):
@@ -75,12 +67,14 @@ class MyGINConv(torch.nn.Module):
         self.eps.data.fill_(self.init_eps)
 
     def forward(self, x, ptr, idx, num_node):
-        out = sage_sum_forward(x, ptr, idx, num_node)
+        out = sage_mean_forward(x, ptr, idx, num_node)
         out += (1 + self.eps) * x[:num_node]
         out = self.nn(out)
         return out
 
+
 class RGCNOP(torch.autograd.Function):
+
     @staticmethod
     def forward(ctx, x, weights, ptr, idx, rel, num_center):
         ctx.save_for_backward(x, weights, ptr, idx, rel)
@@ -88,8 +82,8 @@ class RGCNOP(torch.autograd.Function):
         output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
         for i in range(num_rel):
             transformed_x = torch.mm(x, weights[i])
-            selective_aggr(transformed_x, ptr, idx, (rel == i),
-                                         output, num_center)
+            selective_aggr(transformed_x, ptr, idx, (rel == i), output,
+                           num_center)
         return output
 
     @staticmethod
@@ -102,11 +96,66 @@ class RGCNOP(torch.autograd.Function):
         num_node = x.shape[0]
         x_t = x.transpose(0, 1)
         for i in range(num_rel):
-            grad_selective = torch.zeros([num_node, grad_out.shape[-1]], device=x.device)
-            selective_aggr_bwd(grad_out, ptr, idx, (rel == i), grad_selective, num_center) # pass grad through selective_aggr
-            grad_x += torch.mm(grad_selective, weights[i].transpose(0,1))
+            grad_selective = torch.zeros([num_node, grad_out.shape[-1]],
+                                         device=x.device)
+            selective_aggr_bwd(grad_out, ptr, idx, (rel == i), grad_selective,
+                               num_center)  # pass grad through selective_aggr
+            grad_x += torch.mm(grad_selective, weights[i].transpose(0, 1))
             grad_weights.append(torch.mm(x_t, grad_selective))
         return grad_x, torch.stack(grad_weights), None, None, None, None
+
+
+class RGCNOP2(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, weights, ptr, idx, rel, num_center):
+        num_rel = weights.shape[0]
+        output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
+        aggr_outputs = []
+        for i in range(num_rel):
+            aggr_output = torch.zeros([num_center, weights.shape[-2]],
+                                      device=x.device)
+            selective_aggr(x, ptr, idx, (rel == i), aggr_output, num_center)
+            output += torch.mm(aggr_output, weights[i])
+            # output += torch.empty([num_center, weights.shape[-1]],
+            #                       device=x.device)
+            aggr_outputs.append(aggr_output)
+        ctx.save_for_backward(x, weights, ptr, idx, rel,
+                              torch.stack(aggr_outputs))
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, weights, ptr, idx, rel, aggr_outputs = ctx.saved_tensors
+        num_rel = weights.shape[0]
+        grad_x = torch.zeros_like(x)
+        grad_weights = []
+        num_center = grad_out.shape[0]
+        for i in range(num_rel):
+            grad_mm = torch.mm(grad_out, weights[i].transpose(0, 1))
+            # grad_mm = torch.empty([num_center, weights.shape[-2]],
+            #                       device=x.device)
+            grad_weights.append(
+                torch.mm(aggr_outputs[i].transpose(0, 1), grad_out))
+            selective_aggr_bwd(grad_mm, ptr, idx, (rel == i), grad_x,
+                               num_center)  # pass grad through selective_aggr
+        return grad_x, torch.stack(grad_weights), None, None, None, None
+
+
+class RGCNOP3(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, weights, ptr, idx, rel, num_center):
+        ctx.save_for_backward(x, weights, ptr, idx, rel)
+        output = aggr_rgcn_direct_func(x, ptr, idx, weights, rel.int(),
+                                       num_center)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, weights, ptr, idx, rel = ctx.saved_tensors
+        return torch.randn_like(x), torch.randn_like(
+            weights), None, None, None, None
 
 
 class MyRGCNConv(torch.nn.Module):
@@ -122,11 +171,12 @@ class MyRGCNConv(torch.nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
+        glorot(self.linear)
         # self.linear.reset_parameters()
         pass
 
     def forward(self, x, ptr, idx, edge_types, num_node):
-        out = RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
+        out = RGCNOP2.apply(x, self.linear, ptr, idx, edge_types, num_node)
         return out
 
 
@@ -322,6 +372,7 @@ class MyGATConv(torch.nn.Module):
         return x
 
     def forward(self, x, ptr, idx, num_dst, num_src, num_edge):
+        # return self.forward_many(x, ptr, idx, num_dst, num_src, num_edge)
         if self.heads == 1:
             return self.forward_1(x, ptr, idx, num_dst, num_src, num_edge)
         else:

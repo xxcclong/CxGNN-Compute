@@ -15,6 +15,7 @@ void init_compute(py::module &m) {
   m.def("sage_sum_forward", &sage_sum_forward, "Sage sum forward");
   m.def("aggr_rel", &aggr_rel, "");
   m.def("aggr_rel_direct", &aggr_rel_direct, "");
+  m.def("aggr_rgcn_direct_func", &aggr_rgcn_direct_func, "");
   m.def("gather", &gather, "gather");
   m.def("edge_attention", &edge_softmax_forward, "ptr"_a, "idx"_a, "att_dst"_a,
         "att_src"_a, "num_edge"_a, "relu_l"_a, "Edge attention");
@@ -24,6 +25,7 @@ void init_compute(py::module &m) {
   m.def("rel_schedule", &rel_schedule, "rel schedule");
   m.def("selective_aggr", &selective_aggr_fwd, "selective aggr");
   m.def("selective_aggr_bwd", &selective_aggr_bwd, "selective aggr");
+  m.def("gen_edge_type_mag240m", &gen_edge_type_mag240m, "");
 }
 
 PYBIND11_MODULE(cxgnncomp_backend, m) {

@@ -6,6 +6,7 @@ import dgl.nn.pytorch.conv as dglnn
 from .graph_conv import MyGATConv, MyGCNConv, MyRGCNConv, MyRGCNConvNaive, MyRGCNConvOpt1, MyRGCNConvOpt2, MySageConv, MyGINConv
 # import torch.autograd.profiler as profiler
 # from profile import gpu_profile
+import cxgnncomp_backend
 
 
 class GNN(torch.nn.Module):
@@ -134,6 +135,10 @@ class RGCN(GNN):
 
     def init_conv(self, in_channels, out_channels, **kwargs):
         self.num_rel = kwargs["num_rel"]
+        self.dataset_name = kwargs["dataset_name"]
+        self.gen_rel = self.dataset_name == "rmag240m"
+        if self.dataset_name == "rmag240m":
+            self.num_rel = 5
         if "CSR" in self.graph_type:
             return MyRGCNConv(in_channels,
                               out_channels,
@@ -151,43 +156,44 @@ class RGCN(GNN):
 
     def forward_cxg(self, batch):
         x = batch.x
+        if self.gen_rel:
+            etypes = cxgnncomp_backend.gen_edge_type_mag240m(
+                batch.ptr, batch.idx, batch.sub_to_full)
+        else:
+            etypes = torch.randint(
+                0,
+                self.num_rel, (batch.num_edge_in_layer[self.num_layers - 1], ),
+                device=x.device)
         for i, conv in enumerate(self.convs[:-1]):
             if self.graph_type == "CSR_Layer":
                 num_node = batch.num_node_in_layer[self.num_layers - 1 - i]
             else:
                 num_node = 0
-            etypes = torch.randint(
-                0,
-                self.num_rel,
-                (batch.num_edge_in_layer[self.num_layers - 1 - i], ),
-                device=x.device)
-            x = conv(x, batch.ptr, batch.idx, etypes, num_node)
+            x = conv(x, batch.ptr, batch.idx,
+                     etypes[:batch.num_edge_in_layer[self.num_layers - 1 - i]],
+                     num_node)
             x = self.bns[i](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        etypes = torch.randint(0,
-                               self.num_rel, (batch.num_edge_in_layer[0], ),
-                               device=x.device)
-        x = self.convs[-1](x, batch.ptr, batch.idx, etypes,
+        x = self.convs[-1](x, batch.ptr, batch.idx,
+                           etypes[:batch.num_edge_in_layer[0]],
                            batch.num_node_in_layer[0]
                            if self.graph_type == "CSR_Layer" else 0)
         return x.log_softmax(dim=-1)
 
     def forward_dgl(self, blocks, x):
+        etypes = torch.randint(0,
+                               self.num_rel, (blocks[0].number_of_edges(), ),
+                               device=x.device)
         for layer, conv in enumerate(self.convs[:-1]):
-            etypes = torch.randint(0,
-                                   self.num_rel,
-                                   (blocks[layer].number_of_edges(), ),
-                                   device=x.device)
-            x = conv(blocks[layer], x, etypes)
+            x = conv(blocks[layer], x,
+                     etypes[:blocks[layer].number_of_edges()])
             x = self.bns[layer](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
 
-        etypes = torch.randint(0,
-                               self.num_rel, (blocks[-1].number_of_edges(), ),
-                               device=x.device)
-        x = self.convs[-1](blocks[-1], x, etypes)
+        x = self.convs[-1](blocks[-1], x,
+                           etypes[:blocks[-1].number_of_edges()])
         return x.log_softmax(dim=-1)
 
 
@@ -208,6 +214,17 @@ class GAT(GNN):
             return pygnn.GATConv(in_channels, out_channels)
         else:
             assert (0)
+
+    def forward_dgl(self, blocks, x):
+        for layer, conv in enumerate(self.convs[:-1]):
+            x = conv(blocks[layer], x)
+            x = x.mean(dim=1)
+            x = self.bns[layer](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.convs[-1](blocks[-1], x)
+        x = x.mean(dim=1)
+        return x.log_softmax(dim=-1)
 
     def forward_cxg(self, batch):
         x = batch.x
@@ -232,12 +249,6 @@ class GAT(GNN):
                            num_src=batch.num_node_in_layer[1],
                            num_edge=batch.num_edge_in_layer[0])
         return x.log_softmax(dim=-1)
-
-
-class MLP(GNN):
-
-    def init_conv(self, in_channels, out_channels):
-        return torch.nn.Linear(in_channels, out_channels)
 
 
 class GIN(GNN):
@@ -321,7 +332,6 @@ graph_type_dict = {
 model_dict = {
     "gcn": GCN,
     "gat": GAT,
-    "mlp": MLP,
     "gin": GIN,
     "rgcn": RGCN,
     "sage": SAGE,
@@ -349,14 +359,16 @@ def get_model(config):
                                                             concat=concat)
     elif "rgcn" in config.train.model.type.lower():
         rel = int(config.train.model['num_rel'])
-        model = model_dict[config.train.model.type.lower()](in_channel,
-                                                            hidden_channel,
-                                                            out_channel,
-                                                            num_layers,
-                                                            dropout,
-                                                            graph_type,
-                                                            config,
-                                                            num_rel=rel)
+        model = model_dict[config.train.model.type.lower()](
+            in_channel,
+            hidden_channel,
+            out_channel,
+            num_layers,
+            dropout,
+            graph_type,
+            config,
+            num_rel=rel,
+            dataset_name=config.dl.dataset.name.lower())
     else:
         model = model_dict[config.train.model.type.lower()](
             in_channel, hidden_channel, out_channel, num_layers, dropout,

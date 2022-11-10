@@ -545,10 +545,10 @@ tensor_list AggrRelFunction::backward(AutogradContext *ctx,
           torch::Tensor(), torch::Tensor(), torch::Tensor()};
 }
 
-__global__ void aggr_rgcn_direct(Index *ptr, Index *idx, float *vin,
-                                 float *vout, Index num_v, int INFEATURE,
-                                 int OUTFEATURE, int num_rel, float *weight,
-                                 int *etype) {
+__global__ void aggr_rgcn_direct_kernel(Index *ptr, Index *idx, float *vin,
+                                        float *vout, Index num_v, int INFEATURE,
+                                        int OUTFEATURE, int num_rel,
+                                        float *weight, int *etype) {
   int block_size = blockDim.x * blockDim.y;
   int row = blockIdx.x * blockDim.y + threadIdx.y;
   if (row >= num_v) return;
@@ -562,8 +562,8 @@ __global__ void aggr_rgcn_direct(Index *ptr, Index *idx, float *vin,
   int *shared_idx = (int *)(sh_rgcn + warpid * 32);
   int *shared_etype = (int *)(sh_rgcn + block_size + warpid * 32);
   // assuming kInFeatLen % 32 == 0
-  int intimes = INFEATURE / 32;
-  int outtimes = OUTFEATURE / 32;
+  int intimes = (INFEATURE + 31) / 32;
+  int outtimes = (OUTFEATURE + 31) / 32;
   for (int cas = 0; cas < outtimes; cas++) {
     // working on col : cas * 32 + lane
     int thisoutfea = cas * 32 + lane;
@@ -579,13 +579,14 @@ __global__ void aggr_rgcn_direct(Index *ptr, Index *idx, float *vin,
         for (int t = 0; t < intimes; t++) {
           float val = vin[shared_idx[j] + t * 32 + lane];
           for (int k = 0; k < 32; k++) {
-            rs += __shfl_sync(0xffffffff, val, k, 32) *
-                  weight[theweight + (t * 32 + k) * OUTFEATURE + thisoutfea];
+            if (k + t * 32 < INFEATURE)
+              rs += __shfl_sync(0xffffffff, val, k, 32) *
+                    weight[theweight + (t * 32 + k) * OUTFEATURE + thisoutfea];
           }
         }
       }
     }
-    atomicAdd(&vout[whichv_fea + thisoutfea], rs);
+    if (thisoutfea < OUTFEATURE) atomicAdd(&vout[whichv_fea + thisoutfea], rs);
   }
 }
 
@@ -618,15 +619,36 @@ torch::Tensor AggrRelDirectFunction::forward(
   block.x = 32;
   block.y = block_size / 32;
   int shared_size = block_size * 2 * sizeof(int);
-  aggr_rgcn_direct<<<grid, block, shared_size>>>(
+  aggr_rgcn_direct_kernel<<<grid, block, shared_size>>>(
       ptr.data<Index>(), idx.data<Index>(), input.data<float>(),
       output.data<float>(), num_node, feat_len, out_feat_len, num_rel,
       weights.data<float>(), rel.data<int>());
+  return output;
+}
 
-  // __global__ void aggr_rgcn_direct(Index *ptr, Index *idx, float *vin, float
-  // *vout, Index num_v,
-  //                                  int INFEATURE, int OUTFEATURE, int
-  //                                  num_rel, float *weight, int *etype) {
+torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
+                                    torch::Tensor idx, torch::Tensor weights,
+                                    torch::Tensor rel, Index num_node) {
+  int num_rel = weights.sizes()[0];
+  int feat_len = input.sizes()[1];
+  int out_feat_len = weights.sizes()[2];
+  ASSERTWITH(feat_len == weights.sizes()[1], "feat_len weight size {} {}",
+             feat_len, weights.sizes()[1]);
+  // ASSERT(feat_len % 32 == 0);
+  // ASSERT(out_feat_len % 32 == 0);
+  ASSERT(input.device().index() >= 0);
+  auto output = input.new_zeros({num_node, out_feat_len});
+  int block_size = 256;
+  int tmp_target_in_block = block_size / 32;
+  dim3 grid, block;
+  grid.x = (num_node + tmp_target_in_block - 1) / tmp_target_in_block;
+  block.x = 32;
+  block.y = block_size / 32;
+  int shared_size = block_size * 2 * sizeof(int);
+  aggr_rgcn_direct_kernel<<<grid, block, shared_size>>>(
+      ptr.data<Index>(), idx.data<Index>(), input.data<float>(),
+      output.data<float>(), num_node, feat_len, out_feat_len, num_rel,
+      weights.data<float>(), rel.data<int>());
   return output;
 }
 
@@ -728,4 +750,57 @@ void selective_aggr_bwd(Tensor grad_output, Tensor ptr, Tensor idx, Tensor mask,
   selective_aggr_bwd_kernel<<<grid, block>>>(
       ptr.data<Index>(), idx.data<Index>(), grad_output.data<float>(),
       computed_grad.data<float>(), mask.data<bool>(), num_center, feat_len);
+}
+
+#define PAPER_NUM 121751666
+#define PAPER_AUTHOR_NUM 244134778
+#define PAPER_AUTHOR_INSTITUTE_NUM 244160499
+
+__global__ void gen_edge_type_mag240m_kernel(Index *ptr, Index *idx,
+                                             Index *sub_to_full, Index *etype,
+                                             Index num_node) {
+  int lane = threadIdx.x & 31;
+  int row = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  Index center_id = sub_to_full[row];
+#pragma unroll
+  for (Index i = begin + lane; i < end; i += 32) {
+    Index neighbor_id = sub_to_full[idx[i]];
+    if (center_id < PAPER_NUM) {
+      if (neighbor_id < PAPER_NUM)
+        etype[i] = 0;
+      else if (neighbor_id < PAPER_AUTHOR_NUM)
+        etype[i] = 1;
+      else
+        assert(0);  // no paper-institute edge
+    } else if (center_id < PAPER_AUTHOR_INSTITUTE_NUM) {
+      if (neighbor_id < PAPER_NUM)
+        etype[i] = 2;
+      else if (neighbor_id < PAPER_AUTHOR_NUM)
+        assert(0);  // no author-author edge
+      else
+        etype[i] = 3;
+    } else {
+      if (neighbor_id < PAPER_NUM)
+        assert(0);  // no institute-paper edge
+      else if (neighbor_id < PAPER_AUTHOR_NUM)
+        etype[i] = 4;
+      else
+        assert(0);  // no institute-institute edge
+    }
+  }
+}
+
+torch::Tensor gen_edge_type_mag240m(torch::Tensor ptr, torch::Tensor idx,
+                                    torch::Tensor sub_to_full) {
+  torch::Tensor etype = torch::empty_like(idx);
+  Index num_node = ptr.sizes()[0] - 1;
+  int block_size = 512;
+  int per_block = 512 / 32;
+  gen_edge_type_mag240m_kernel<<<((num_node + per_block - 1) / per_block),
+                                 block_size>>>(
+      ptr.data<Index>(), idx.data<Index>(), sub_to_full.data<Index>(),
+      etype.data<Index>(), num_node);
+  return etype;
 }
