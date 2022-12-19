@@ -112,6 +112,24 @@ class Trainer:
         torch.cuda.synchronize()
         self.t_end = time.time()
 
+    def pyg_train_epoch(self):
+        self.model.train()
+        self.t_begin = time.time()
+        for batch in tqdm(
+                self.loader.train_loader,
+                bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
+            batch = batch.to(self.device)
+            if self.skip:
+                continue
+            self.optimizer.zero_grad()
+            out = self.model(batch)
+            loss = self.loss_fn(out[:batch.y.shape[0]], batch.y)
+            loss.backward()
+            self.optimizer.step()
+            self.scheduler.step()
+        torch.cuda.synchronize()
+        self.t_end = time.time()
+
     def cxg_eval_epoch(self, split="val"):
         self.model.eval()
         y_preds, y_trues = [], []
@@ -202,6 +220,7 @@ class Trainer:
         self.loss = torch.sum(torch.stack(losses)) / num_seeds
         torch.cuda.synchronize()
         self.t_end = time.time()
+        log.info("split {} metric {}".format(split, self.metric))
 
     def train(self):
         for epoch in range(self.config.train.train.num_epochs):
@@ -212,6 +231,8 @@ class Trainer:
                 self.cxg_dgl_train_epoch()
             elif self.type == "cxg":
                 self.cxg_train_epoch()
+            elif self.type == "pyg" and self.load_type == "pyg":
+                self.pyg_train_epoch()
             log.info(
                 f"{self.mode}-epoch {epoch} {self.mode}-time {self.t_end - self.t_begin}"
             )
