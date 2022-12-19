@@ -86,7 +86,7 @@ class GNN(torch.nn.Module):
         elif "DGL" in self.graph_type:
             return self.forward_dgl(input[0], input[1])
         elif "PyG" in self.graph_type or "COO" in self.graph_type:
-            return pygnn.GCNConv(input[0], input[1])
+            return self.forward_pyg(input.edge_index, input.x)
         else:
             assert (0)
 
