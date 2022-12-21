@@ -1,4 +1,5 @@
 import triton
+from ..util import log
 
 
 def compare(output1, output2):
@@ -12,5 +13,8 @@ def compare(output1, output2):
 
 def prof(task_name, method, func):
     output = triton.testing.do_bench(func)
-    print(f"{task_name} {method}:", output)
+    output2 = []
+    for item in output:
+        output2.append("{:.4f}".format(item))
+    print(f"{task_name} {method}:", output2)
     return output

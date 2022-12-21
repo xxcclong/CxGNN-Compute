@@ -213,9 +213,16 @@ torch::Tensor sageForwardImpl(AutogradContext *ctx, torch::Tensor input,
                                     input.data<float>(), output.data<float>(),
                                     num_node, feat_len);
     } else if (aggr_type == AggrType::Sum) {
-      gen_fwd_sum<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
-                                   input.data<float>(), output.data<float>(),
-                                   num_node, feat_len);
+      // gen_fwd_sum<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
+      //                              input.data<float>(), output.data<float>(),
+      //                              num_node, feat_len);
+      block.x = 128;
+      block.y = 1;
+      int num_target_in_block = block.x * 4 / feat_len;
+      grid.x = (num_node + num_target_in_block - 1) / num_target_in_block;
+      fwd_sum_all_x<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
+                                     input.data<float>(), output.data<float>(),
+                                     num_node, feat_len);
     }
   } else {
     if (aggr_type == AggrType::Mean) {
@@ -803,4 +810,39 @@ torch::Tensor gen_edge_type_mag240m(torch::Tensor ptr, torch::Tensor idx,
       ptr.data<Index>(), idx.data<Index>(), sub_to_full.data<Index>(),
       etype.data<Index>(), num_node);
   return etype;
+}
+
+torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
+                                    torch::Tensor vin, Index num_node,
+                                    int grid_x, int grid_y, int block_x,
+                                    int block_y, int rpb, int cpb, int cpw,
+                                    int grid_map, int block_map) {
+  ASSERTWITH(vin.dim() == 2, "vin must be 2D");
+  int feat_len = vin.sizes().back();
+  auto output = vin.new_zeros({num_node, feat_len});
+  if (cpw == 32) {
+    run_spmm<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+        ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+  } else if (cpw == 64) {
+    run_spmm_2<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+        ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+
+  } else if (cpw == 128) {
+    run_spmm_4<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+        ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+  } else if (cpw == 256) {
+    run_spmm_8<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+        ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+  } else {
+    ASSERT(0);
+  }
+  return output;
 }

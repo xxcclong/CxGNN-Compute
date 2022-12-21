@@ -94,4 +94,10 @@ torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
 
 torch::Tensor gen_edge_type_mag240m(torch::Tensor ptr, torch::Tensor idx,
                                     torch::Tensor sub_to_full);
+
+torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
+                                    torch::Tensor vin, Index num_node,
+                                    int grid_x, int grid_y, int block_x,
+                                    int block_y, int rpb, int cpb, int cpw,
+                                    int grid_map, int block_map);
 #endif

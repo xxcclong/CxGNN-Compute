@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 
 #include "aggr.h"
+#include "dgsparse.h"
 #include "edge_softmax.h"
 #include "schedule.h"
 namespace py = pybind11;
@@ -26,9 +27,52 @@ void init_compute(py::module &m) {
   m.def("selective_aggr", &selective_aggr_fwd, "selective aggr");
   m.def("selective_aggr_bwd", &selective_aggr_bwd, "selective aggr");
   m.def("gen_edge_type_mag240m", &gen_edge_type_mag240m, "");
+  m.def("run_spmm_configurable", &run_spmm_configurable, "run spmm");
+}
+
+void assertTensor(torch::Tensor &T, torch::ScalarType type) {
+  assert(T.is_contiguous());
+  assert(T.device().type() == torch::kCUDA);
+  assert(T.dtype() == type);
+}
+
+torch::Tensor GSpMM(torch::Tensor A_rowptr, torch::Tensor A_colind,
+                    torch::Tensor A_csrVal, torch::Tensor B, REDUCEOP re_op,
+                    COMPUTEOP comp_op) {
+  assertTensor(A_rowptr, torch::kInt32);
+  assertTensor(A_colind, torch::kInt32);
+  assertTensor(A_csrVal, torch::kFloat32);
+  assertTensor(B, torch::kFloat32);
+  return GSpMM_cuda(A_rowptr, A_colind, A_csrVal, B, re_op, comp_op);
+}
+
+torch::Tensor GSpMM_nodata(torch::Tensor A_rowptr, torch::Tensor A_colind,
+                           torch::Tensor B, REDUCEOP op) {
+  assertTensor(A_rowptr, torch::kInt32);
+  assertTensor(A_colind, torch::kInt32);
+  assertTensor(B, torch::kFloat32);
+  return GSpMM_no_value_cuda(A_rowptr, A_colind, B, op);
+}
+
+void init_dgsparse(py::module &m) {
+  m.def("GSpMM_u_e", &GSpMM, "CSR SPMM");
+  m.def("GSpMM_u", &GSpMM_nodata, "CSR SPMM NO EDGE VALUE");
+  py::enum_<REDUCEOP>(m, "REDUCEOP")
+      .value("SUM", REDUCEOP::SUM)
+      .value("MAX", REDUCEOP::MAX)
+      .value("MIN", REDUCEOP::MIN)
+      .value("MEAN", REDUCEOP::MEAN)
+      .export_values();
+  py::enum_<COMPUTEOP>(m, "COMPUTEOP")
+      .value("ADD", COMPUTEOP::ADD)
+      .value("MUL", COMPUTEOP::MUL)
+      .value("DIV", COMPUTEOP::DIV)
+      .value("SUB", COMPUTEOP::SUB)
+      .export_values();
 }
 
 PYBIND11_MODULE(cxgnncomp_backend, m) {
   m.doc() = "A Supa Fast Graph GNN compute library";
   init_compute(m);
+  init_dgsparse(m);
 }

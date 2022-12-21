@@ -1,5 +1,50 @@
 #include "aggr_kernel.h"
 
+__global__ void fwd_sum_all_x(Index *ptr, Index *idx, float *vin, float *vout,
+                              int num_node, int INFEATURE) {
+  int col = (threadIdx.x * 4) % INFEATURE;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  int lane = threadIdx.x & 31;
+  // int row = blockIdx.x * blockDim.y + threadIdx.y;
+  int row = (blockDim.x * 4 / INFEATURE * blockIdx.x) +
+            ((threadIdx.x * 4) / INFEATURE);
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float4 rs;
+  rs.x = 0.f;
+  rs.y = 0.f;
+  rs.z = 0.f;
+  rs.w = 0.f;
+  int theidx;
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      theidx = idx[i + lane];
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
+      // if (col < INFEATURE) {
+      Index target_addr = (Index)neighbor_id * infeat + visit_col;
+      rs.x += vin[target_addr];
+      rs.y += vin[target_addr + 1];
+      rs.z += vin[target_addr + 2];
+      rs.w += vin[target_addr + 3];
+      // }
+    }
+  }
+  // if (col < INFEATURE) {
+  Index target_addr = row * INFEATURE + col;
+  vout[target_addr] = rs.x;
+  vout[target_addr + 1] = rs.y;
+  vout[target_addr + 2] = rs.z;
+  vout[target_addr + 3] = rs.w;
+  // }
+}
+
 __global__ void gen_fwd_mean(Index *ptr, Index *idx, float *vin, float *vout,
                              int num_node, int INFEATURE) {
   int lane = threadIdx.x & 31;
@@ -46,7 +91,7 @@ __global__ void gen_fwd_sum(Index *ptr, Index *idx, float *vin, float *vout,
     if (end - i < 32) jlimit = end - i;
     for (int j = 0; j < jlimit; ++j) {
       int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
-      if (col < INFEATURE) rs += vin[neighbor_id * INFEATURE + col];
+      if (col < INFEATURE) rs += vin[((Index)neighbor_id) * INFEATURE + col];
     }
   }
   if (col < INFEATURE) vout[row * INFEATURE + col] = rs;
@@ -491,8 +536,8 @@ __global__ void gen_bwd_sum_edge_value_multi_head_edge_grad(
 }
 
 __global__ void selective_aggr_fwd_kernel(Index *ptr, Index *idx, float *vin,
-                                   float *vout, bool *mask, int num_node,
-                                   int INFEATURE) {
+                                          float *vout, bool *mask, int num_node,
+                                          int INFEATURE) {
   int lane = threadIdx.x & 31;
   int row = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
   int col = (threadIdx.y << 5) + lane;
@@ -521,8 +566,8 @@ __global__ void selective_aggr_fwd_kernel(Index *ptr, Index *idx, float *vin,
 }
 
 __global__ void selective_aggr_bwd_kernel(
-    Index *ptr, Index *idx, float *grads_in, float *grads_out,
-    bool *mask, Index num_node,
+    Index *ptr, Index *idx, float *grads_in, float *grads_out, bool *mask,
+    Index num_node,
     int INFEATURE)  // push the gradient to the neighbor vertex
 {
   int lane = threadIdx.x & 31;
@@ -578,4 +623,248 @@ __global__ void target_aggr(Index *ptr, Index *idx, Index *targets, float *vin,
     }
   }
   if (col < INFEATURE) atomicAdd(vout + target_id * INFEATURE + col, rs);
+}
+
+__global__ void run_spmm(Index *ptr, Index *idx, float *vin, float *vout,
+                         int num_node, int INFEATURE, int rpb, int cpb, int cpw,
+                         int grid_map, int block_map) {
+  int required_num_block = INFEATURE / cpb;
+  int a = blockIdx.x / required_num_block * gridDim.y + blockIdx.y;
+  int b = blockIdx.x * (gridDim.y / required_num_block) +
+          blockIdx.y / required_num_block;
+  int block_start_row = grid_map == 0 ? a : b;
+  block_start_row *= rpb;
+  int block_start_col = grid_map == 0 ? (blockIdx.x % required_num_block) * cpb
+                                      : (blockIdx.y % required_num_block) * cpb;
+  int required_num_warp = cpb / cpw;
+  int c = (threadIdx.x / 32) / required_num_warp * blockDim.y + threadIdx.y;
+  int d = (threadIdx.x / 32) * (blockDim.y / required_num_warp) +
+          threadIdx.y / required_num_warp;
+  int row = block_start_row + (block_map == 0 ? c : d);
+  int lane = threadIdx.x & 31;
+  int col = block_start_col +
+            (block_map == 0 ? ((threadIdx.x / 32) % required_num_warp) * cpw
+                            : (threadIdx.y % required_num_warp) * cpw);
+  // if ((lane == 0 && blockIdx.x < 10) || block_start_row >= 614618) {
+  //   printf(
+  //       "blockidx.x %d blockidx.y %d threadidx.x %d threadidx.y %d "
+  //       "block_start_row: %d, block_start_col: %d, row: %d, col: %d\n",
+  //       blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y, block_start_row,
+  //       block_start_col, row, col);
+  // }
+  col += lane;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float res = 0.f;
+  int theidx;
+  int jlimit;
+#pragma unroll
+  for (int offset = 0; offset < cpw; offset += 32) {
+    visit_col = col + offset;
+    for (Index i = begin; i < end; i += 32) {
+      if (i + lane < end) {
+        theidx = idx[i + lane];
+      }
+      jlimit = 32;
+      if (end - i < 32) jlimit = end - i;
+      for (int j = 0; j < jlimit; ++j) {
+        int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
+        Index target_addr = (Index)neighbor_id * infeat + visit_col;
+        res += vin[target_addr];
+      }
+    }
+    Index target_addr = row * INFEATURE + visit_col;
+    vout[target_addr] = res;
+  }
+}
+
+__global__ void run_spmm_2(Index *ptr, Index *idx, float *vin, float *vout,
+                           int num_node, int INFEATURE, int rpb, int cpb,
+                           int cpw, int grid_map, int block_map) {
+  int required_num_block = INFEATURE / cpb;
+  int a = blockIdx.x / required_num_block * gridDim.y + blockIdx.y;
+  int b = blockIdx.x * (gridDim.y / required_num_block) +
+          blockIdx.y / required_num_block;
+  int block_start_row = grid_map == 0 ? a : b;
+  block_start_row *= rpb;
+  int block_start_col = grid_map == 0 ? (blockIdx.x % required_num_block) * cpb
+                                      : (blockIdx.y % required_num_block) * cpb;
+  int required_num_warp = cpb / cpw;
+  int c = (threadIdx.x / 32) / required_num_warp * blockDim.y + threadIdx.y;
+  int d = (threadIdx.x / 32) * (blockDim.y / required_num_warp) +
+          threadIdx.y / required_num_warp;
+  int row = block_start_row + (block_map == 0 ? c : d);
+  int lane = threadIdx.x & 31;
+  int col = block_start_col +
+            (block_map == 0 ? ((threadIdx.x / 32) % required_num_warp) * cpw
+                            : (threadIdx.y % required_num_warp) * cpw);
+  // if ((lane == 0 && blockIdx.x < 10) || block_start_row >= 614618) {
+  //   printf(
+  //       "blockidx.x %d blockidx.y %d threadidx.x %d threadidx.y %d "
+  //       "block_start_row: %d, block_start_col: %d, row: %d, col: %d\n",
+  //       blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y, block_start_row,
+  //       block_start_col, row, col);
+  // }
+  col += lane * cpw / 32;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float res1 = 0.f;
+  float res2 = 0.f;
+  int theidx;
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      theidx = idx[i + lane];
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
+      Index target_addr = (Index)neighbor_id * infeat + visit_col;
+      res1 += vin[target_addr];
+      res2 += vin[target_addr + 1];
+    }
+  }
+  Index target_addr = row * INFEATURE + visit_col;
+  vout[target_addr] = res1;
+  vout[target_addr + 1] = res2;
+}
+
+__global__ void run_spmm_4(Index *ptr, Index *idx, float *vin, float *vout,
+                           int num_node, int INFEATURE, int rpb, int cpb,
+                           int cpw, int grid_map, int block_map) {
+  int required_num_block = INFEATURE / cpb;
+  int a = blockIdx.x / required_num_block * gridDim.y + blockIdx.y;
+  int b = blockIdx.x * (gridDim.y / required_num_block) +
+          blockIdx.y / required_num_block;
+  int block_start_row = grid_map == 0 ? a : b;
+  block_start_row *= rpb;
+  int block_start_col = grid_map == 0 ? (blockIdx.x % required_num_block) * cpb
+                                      : (blockIdx.y % required_num_block) * cpb;
+  int required_num_warp = cpb / cpw;
+  int c = (threadIdx.x / 32) / required_num_warp * blockDim.y + threadIdx.y;
+  int d = (threadIdx.x / 32) * (blockDim.y / required_num_warp) +
+          threadIdx.y / required_num_warp;
+  int row = block_start_row + (block_map == 0 ? c : d);
+  int lane = threadIdx.x & 31;
+  int col = block_start_col +
+            (block_map == 0 ? ((threadIdx.x / 32) % required_num_warp) * cpw
+                            : (threadIdx.y % required_num_warp) * cpw);
+  // if ((lane == 0 && blockIdx.x < 10) || block_start_row >= 614618) {
+  //   printf(
+  //       "blockidx.x %d blockidx.y %d threadidx.x %d threadidx.y %d "
+  //       "block_start_row: %d, block_start_col: %d, row: %d, col: %d\n",
+  //       blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y, block_start_row,
+  //       block_start_col, row, col);
+  // }
+  col += lane * cpw / 32;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float res1 = 0.f;
+  float res2 = 0.f;
+  float res3 = 0.f;
+  float res4 = 0.f;
+  int theidx;
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      theidx = idx[i + lane];
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
+      Index target_addr = (Index)neighbor_id * infeat + visit_col;
+      res1 += vin[target_addr];
+      res2 += vin[target_addr + 1];
+      res3 += vin[target_addr + 2];
+      res4 += vin[target_addr + 3];
+    }
+  }
+  Index target_addr = row * INFEATURE + visit_col;
+  vout[target_addr] = res1;
+  vout[target_addr + 1] = res2;
+  vout[target_addr + 2] = res3;
+  vout[target_addr + 3] = res4;
+}
+
+__global__ void run_spmm_8(Index *ptr, Index *idx, float *vin, float *vout,
+                           int num_node, int INFEATURE, int rpb, int cpb,
+                           int cpw, int grid_map, int block_map) {
+  int required_num_block = INFEATURE / cpb;
+  int a = blockIdx.x / required_num_block * gridDim.y + blockIdx.y;
+  int b = blockIdx.x * (gridDim.y / required_num_block) +
+          blockIdx.y / required_num_block;
+  int block_start_row = grid_map == 0 ? a : b;
+  block_start_row *= rpb;
+  int block_start_col = grid_map == 0 ? (blockIdx.x % required_num_block) * cpb
+                                      : (blockIdx.y % required_num_block) * cpb;
+  int required_num_warp = cpb / cpw;
+  int c = (threadIdx.x / 32) / required_num_warp * blockDim.y + threadIdx.y;
+  int d = (threadIdx.x / 32) * (blockDim.y / required_num_warp) +
+          threadIdx.y / required_num_warp;
+  int row = block_start_row + (block_map == 0 ? c : d);
+  int lane = threadIdx.x & 31;
+  int col = block_start_col +
+            (block_map == 0 ? ((threadIdx.x / 32) % required_num_warp) * cpw
+                            : (threadIdx.y % required_num_warp) * cpw);
+  // if ((lane == 0 && blockIdx.x < 10) || block_start_row >= 614618) {
+  //   printf(
+  //       "blockidx.x %d blockidx.y %d threadidx.x %d threadidx.y %d "
+  //       "block_start_row: %d, block_start_col: %d, row: %d, col: %d\n",
+  //       blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y, block_start_row,
+  //       block_start_col, row, col);
+  // }
+  col += lane * cpw / 32;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float res1 = 0.f;
+  float res2 = 0.f;
+  float res3 = 0.f;
+  float res4 = 0.f;
+  float res5 = 0.f;
+  float res6 = 0.f;
+  float res7 = 0.f;
+  float res8 = 0.f;
+  int theidx;
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      theidx = idx[i + lane];
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
+      Index target_addr = (Index)neighbor_id * infeat + visit_col;
+      res1 += vin[target_addr];
+      res2 += vin[target_addr + 1];
+      res3 += vin[target_addr + 2];
+      res4 += vin[target_addr + 3];
+      res5 += vin[target_addr + 4];
+      res6 += vin[target_addr + 5];
+      res7 += vin[target_addr + 6];
+      res8 += vin[target_addr + 7];
+    }
+  }
+  Index target_addr = row * INFEATURE + visit_col;
+  vout[target_addr] = res1;
+  vout[target_addr + 1] = res2;
+  vout[target_addr + 2] = res3;
+  vout[target_addr + 3] = res4;
+  vout[target_addr + 4] = res5;
+  vout[target_addr + 5] = res6;
+  vout[target_addr + 6] = res7;
+  vout[target_addr + 7] = res8;
 }
