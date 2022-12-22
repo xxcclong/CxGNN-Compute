@@ -31,8 +31,10 @@ cxgnncomp.prof(f"spmm", "triton",
                lambda: cxgnncomp.spmm_triton(x, ptr, idx, ptr.shape[0] - 1))
 cxgnncomp.prof(f"spmm", "manual",
                lambda: cxgnncomp.sage_sum_forward(x, ptr, idx, ptr.shape[0] - 1))
+# manual: (307328, 1, 128, 1, 2, 256, 128, 0, 0)
 cxgnncomp.prof(f"spmm", "dgsparse",
                lambda: cxgnncomp_backend.GSpMM_u(ptr_for_dgsparse, idx_for_dgsparse, x, cxgnncomp_backend.REDUCEOP.SUM))
+# dgsparse: (76832, 4, 32, 8, 8, 64, 64, 1, 0)
 
 
 def validate(cpw, rpb, cpb, block_size, feat_len):
@@ -98,6 +100,37 @@ for rpb in rpbs:
 print(len(params))
 mmin = 1e9
 best_config = None
+
+# params = [
+#     (76832, 4, 32, 8, 8, 64, 64, 1, 0),
+#     (307328, 1, 128, 1, 2, 256, 128, 0, 0),
+#     (614656, 2, 32, 1, 1, 128, 128, 1, 0)
+# ]
+
+# for param in params:
+#     output = cxgnncomp_backend.run_spmm_configurable_int32(
+#         ptr_for_dgsparse, idx_for_dgsparse, x, ptr.shape[0] - 1, *param)
+#     res = cxgnncomp.prof("spmm", "config", lambda: cxgnncomp_backend.run_spmm_configurable_int32(
+#         ptr_for_dgsparse, idx_for_dgsparse, x, ptr.shape[0] - 1, *param))
+#     assert torch.allclose(output, output_torch, atol=1e-5, rtol=1e-4)
+# exit()
+
+for param in params:
+    # param = (1229312, 1, 32, 2, 2, 64, 64, 0, 0)
+    print(param)
+    output = cxgnncomp_backend.run_spmm_configurable_int32(
+        ptr_for_dgsparse, idx_for_dgsparse, x, ptr.shape[0] - 1, *param)
+    res = cxgnncomp.prof("spmm", "config", lambda: cxgnncomp_backend.run_spmm_configurable_int32(
+        ptr_for_dgsparse, idx_for_dgsparse, x, ptr.shape[0] - 1, *param))
+    assert torch.allclose(output, output_torch, atol=1e-5, rtol=1e-4)
+    if res[1] < mmin:
+        mmin = res[1]
+        best_config = param
+    print("res", res[1], mmin, best_config)
+    print("res2", res[1], param)
+
+exit()
+
 for param in params:
     # param = (1229312, 1, 32, 2, 2, 64, 64, 0, 0)
     print(param)

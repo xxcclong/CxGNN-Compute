@@ -821,26 +821,103 @@ torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
   int feat_len = vin.sizes().back();
   auto output = vin.new_zeros({num_node, feat_len});
   if (cpw == 32) {
-    run_spmm<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    run_spmm_sharedmem<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1),
+                         block_x * block_y * sizeof(int)>>>(
         ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
         output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
         block_map);
+    // run_spmm<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+    //     block_map);
   } else if (cpw == 64) {
-    run_spmm_2<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    run_spmm_sharedmem_step_2<<<dim3(grid_x, grid_y, 1),
+                                dim3(block_x, block_y, 1),
+                                block_x * block_y * sizeof(int)>>>(
         ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
         output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
         block_map);
+    // run_spmm_2<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+    //     block_map);
 
   } else if (cpw == 128) {
-    run_spmm_4<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    run_spmm_sharedmem_step_4<<<dim3(grid_x, grid_y, 1),
+                                dim3(block_x, block_y, 1),
+                                block_x * block_y * sizeof(int)>>>(
         ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
         output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
         block_map);
+    // run_spmm_4<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+    //     block_map);
   } else if (cpw == 256) {
     run_spmm_8<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
         ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
         output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
         block_map);
+  } else {
+    ASSERT(0);
+  }
+  return output;
+}
+
+torch::Tensor run_spmm_configurable_int32(torch::Tensor ptr, torch::Tensor idx,
+                                          torch::Tensor vin, Index num_node,
+                                          int grid_x, int grid_y, int block_x,
+                                          int block_y, int rpb, int cpb,
+                                          int cpw, int grid_map,
+                                          int block_map) {
+  ASSERTWITH(vin.dim() == 2, "vin must be 2D");
+  int feat_len = vin.sizes().back();
+  auto output = vin.new_zeros({num_node, feat_len});
+  if (cpw == 32) {
+    run_spmm_sharedmem_int<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y,
+    1),
+                             block_x * block_y * sizeof(int)>>>(
+        ptr.data<int>(), idx.data<int>(), vin.data<float>(),
+        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+    // run_spmm<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+    //     block_map);
+  } else if (cpw == 64) {
+    run_spmm_sharedmem_step_2_int<<<dim3(grid_x, grid_y, 1),
+                                    dim3(block_x, block_y, 1),
+                                    block_x * block_y * sizeof(int)>>>(
+        ptr.data<int>(), idx.data<int>(), vin.data<float>(),
+        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+    // run_spmm_2<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+    //     block_map);
+
+  } else if (cpw == 128) {
+    run_spmm_sharedmem_step_4_int<<<dim3(grid_x, grid_y, 1),
+                                    dim3(block_x, block_y, 1),
+                                    block_x * block_y * sizeof(int)>>>(
+        ptr.data<int>(), idx.data<int>(), vin.data<float>(),
+        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+    // run_spmm_4<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+    //     block_map);
+  } else if (cpw == 256) {
+    run_spmm_sharedmem_step_8_int<<<dim3(grid_x, grid_y, 1),
+                                    dim3(block_x, block_y, 1),
+                                    block_x * block_y * sizeof(int)>>>(
+        ptr.data<int>(), idx.data<int>(), vin.data<float>(),
+        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+    // run_spmm_8<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
+    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+    //     block_map);
   } else {
     ASSERT(0);
   }

@@ -28,6 +28,8 @@ void init_compute(py::module &m) {
   m.def("selective_aggr_bwd", &selective_aggr_bwd, "selective aggr");
   m.def("gen_edge_type_mag240m", &gen_edge_type_mag240m, "");
   m.def("run_spmm_configurable", &run_spmm_configurable, "run spmm");
+  m.def("run_spmm_configurable_int32", &run_spmm_configurable_int32,
+        "run spmm");
 }
 
 void assertTensor(torch::Tensor &T, torch::ScalarType type) {

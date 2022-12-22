@@ -100,4 +100,10 @@ torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
                                     int grid_x, int grid_y, int block_x,
                                     int block_y, int rpb, int cpb, int cpw,
                                     int grid_map, int block_map);
+
+torch::Tensor run_spmm_configurable_int32(torch::Tensor ptr, torch::Tensor idx,
+                                          torch::Tensor vin, Index num_node,
+                                          int grid_x, int grid_y, int block_x,
+                                          int block_y, int rpb, int cpb,
+                                          int cpw, int grid_map, int block_map);
 #endif
