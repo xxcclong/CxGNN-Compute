@@ -3,6 +3,9 @@ from torch.nn import Parameter
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.inits import glorot
 from cxgnncomp_backend import edge_attention, sage_sum_forward_edge_value, gather, sage_sum_forward, aggr_rel, sage_mean_forward, selective_aggr, selective_aggr_bwd, aggr_rgcn_direct_func
+from .util import log
+import torch.nn.functional as F
+from torch_scatter import segment_csr, gather_csr
 
 torch.fx.wrap("edge_attention")
 torch.fx.wrap("sage_sum_forward_edge_value")
@@ -167,16 +170,23 @@ class MyRGCNConv(torch.nn.Module):
         self.num_rel = num_rel
         self.linear = torch.nn.Parameter(
             torch.randn(num_rel, in_channels, hidden_channels))
+        log.info("linear shape: {}".format(self.linear.shape))
         self.register_parameter("rel_weight", self.linear)
+        self.single_linear = torch.nn.Linear(in_channels, hidden_channels)
         self.reset_parameters()
 
     def reset_parameters(self):
         glorot(self.linear)
         # self.linear.reset_parameters()
+        self.single_linear.reset_parameters()
         pass
 
     def forward(self, x, ptr, idx, edge_types, num_node):
-        out = RGCNOP2.apply(x, self.linear, ptr, idx, edge_types, num_node)
+        out = RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
+        deg = ptr[1:] - ptr[:-1]
+        out = out / deg.unsqueeze(-1)[:out.shape[0]]
+        # out = self.single_linear(x)
+        # out = sage_mean_forward(out, ptr, idx, num_node)
         return out
 
 
@@ -300,7 +310,7 @@ class MyGATConv(torch.nn.Module):
         self.dropout = dropout
 
         self.lin_src = Parameter(
-            torch.Tensor(in_channels, heads * out_channels))
+            torch.Tensor(heads * out_channels, in_channels))
 
         self.att_src = Parameter(torch.Tensor(1, heads, out_channels))
         self.att_dst = Parameter(torch.Tensor(1, heads, out_channels))
@@ -311,7 +321,7 @@ class MyGATConv(torch.nn.Module):
             self.bias = Parameter(torch.Tensor(out_channels))
         else:
             self.bias = None
-
+        self.edge_softmax_schedule = "fused"
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -321,18 +331,49 @@ class MyGATConv(torch.nn.Module):
         if self.bias is not None:
             self.bias.data.fill_(0)
 
+    def edge_softmax_fused(self, ptr, idx, att_src, att_dst, num_edge, relu_l):
+        return edge_attention(ptr=ptr,
+                              idx=idx,
+                              att_src=att_src,
+                              att_dst=att_dst,
+                              num_edge=num_edge,
+                              relu_l=relu_l)
+
+    def edge_softmax_opwise(self, ptr, idx, att_src, att_dst, num_edge,
+                            relu_l):
+        alpha_src = torch.index_select(att_src, 0, idx[:num_edge])
+        alpha_dst = gather_csr(att_dst, ptr)
+        alpha = F.leaky_relu(alpha_src + alpha_dst, relu_l)
+        with torch.no_grad():
+            alpha_max = segment_csr(alpha, ptr, reduce='max')
+            alpha_max = gather_csr(alpha_max, ptr)
+        alpha = torch.exp(alpha - alpha_max)
+        out_sum = segment_csr(alpha, ptr, reduce='sum') + 1e-16
+        out_sum = gather_csr(out_sum, ptr)
+        edge_value = alpha / out_sum
+        return edge_value
+
+    def edge_softmax(self, ptr, idx, att_src, att_dst, num_edge, relu_l):
+        if self.edge_softmax_schedule == "fused":
+            return self.edge_softmax_fused(ptr, idx, att_src, att_dst,
+                                           num_edge, relu_l)
+        else:
+            return self.edge_softmax_opwise(ptr, idx, att_src, att_dst,
+                                            num_edge, relu_l)
+
     def forward_many(self, x, ptr, idx, num_dst, num_src, num_edge):
         H, C = self.heads, self.out_channels
         assert x.dim() == 2
-        x_src = x_dst = torch.mm(x[:num_src], self.lin_src).view(-1, H, C)
+        # x_src = x_dst = torch.mm(x[:num_src], self.lin_src).view(-1, H, C)
+        x_src = x_dst = F.linear(x[:num_src], self.lin_src).view(-1, H, C)
         alpha_src = (x_src * self.att_src).sum(dim=-1).view(-1, H)
         alpha_dst = (x_dst[:num_dst] * self.att_dst).sum(dim=-1).view(-1, H)
-        edge_value = edge_attention(ptr=ptr,
-                                    idx=idx,
-                                    att_src=alpha_src,
-                                    att_dst=alpha_dst,
-                                    num_edge=num_edge,
-                                    relu_l=self.negative_slope)
+        edge_value = self.edge_softmax(ptr=ptr,
+                                       idx=idx,
+                                       att_src=alpha_src,
+                                       att_dst=alpha_dst,
+                                       num_edge=num_edge,
+                                       relu_l=self.negative_slope)
         out = sage_sum_forward_edge_value(x_src, ptr, idx, edge_value, num_dst)
         if self.concat:
             out = out.view(-1, H * C)
@@ -345,34 +386,32 @@ class MyGATConv(torch.nn.Module):
     def forward_1(self, x, ptr, idx, num_dst, num_src, num_edge):
         alpha_src = torch.einsum(
             "mn,nho,ho->mh", x,
-            self.lin_src.view(-1, self.heads, self.out_channels),
+            self.lin_src.T.view(-1, self.heads, self.out_channels),
             self.att_src.squeeze(0)).view(-1, self.heads)
         alpha_dst = torch.einsum(
             "mn,nho,ho->mh", x[:num_dst],
-            self.lin_src.view(-1, self.heads, self.out_channels),
+            self.lin_src.T.view(-1, self.heads, self.out_channels),
             self.att_dst.squeeze(0)).view(-1, self.heads)
-        edge_value = edge_attention(ptr=ptr,
-                                    idx=idx,
-                                    att_src=alpha_src,
-                                    att_dst=alpha_dst,
-                                    num_edge=num_edge,
-                                    relu_l=self.negative_slope)
+        edge_value = self.edge_softmax(ptr=ptr,
+                                       idx=idx,
+                                       att_src=alpha_src,
+                                       att_dst=alpha_dst,
+                                       num_edge=num_edge,
+                                       relu_l=self.negative_slope)
         if self.out_channels < self.in_channels:
-            transformed = torch.mm(x,
-                                   self.lin_src).view(-1, self.heads,
-                                                      self.out_channels)
+            transformed = torch.mm(x, self.lin_src.T).view(
+                -1, self.heads, self.out_channels)
             x = sage_sum_forward_edge_value(transformed, ptr, idx, edge_value,
                                             num_dst).squeeze()
         else:
             x = sage_sum_forward_edge_value(x, ptr, idx, edge_value.squeeze(),
                                             num_dst)
-            x = torch.mm(x, self.lin_src)
+            x = torch.mm(x, self.lin_src.T)
         if self.bias is not None:
             x += self.bias
         return x
 
     def forward(self, x, ptr, idx, num_dst, num_src, num_edge):
-        # return self.forward_many(x, ptr, idx, num_dst, num_src, num_edge)
         if self.heads == 1:
             return self.forward_1(x, ptr, idx, num_dst, num_src, num_edge)
         else:

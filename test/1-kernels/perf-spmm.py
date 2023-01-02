@@ -4,7 +4,6 @@ import cxgnndl
 import cxgnncomp as cxgc
 import cxgnncomp_backend
 import cxgnndl_backend
-from hydra import initialize, compose
 from cxgnncomp.util import log
 import hydra
 

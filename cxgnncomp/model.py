@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch_geometric.nn as pygnn
 import dgl.nn.pytorch.conv as dglnn
 from .graph_conv import MyGATConv, MyGCNConv, MyRGCNConv, MyRGCNConvNaive, MyRGCNConvOpt1, MyRGCNConvOpt2, MySageConv, MyGINConv
+from .util import log
 # import torch.autograd.profiler as profiler
 # from profile import gpu_profile
 import cxgnncomp_backend
@@ -137,20 +138,21 @@ class RGCN(GNN):
         self.num_rel = kwargs["num_rel"]
         self.dataset_name = kwargs["dataset_name"]
         self.gen_rel = self.dataset_name == "rmag240m"
-        if self.dataset_name == "rmag240m":
+        if self.gen_rel:
             self.num_rel = 5
+            log.info("Generate relation type for RMAG240M at 5")
         if "CSR" in self.graph_type:
             return MyRGCNConv(in_channels,
                               out_channels,
-                              num_rel=kwargs["num_rel"])
+                              num_rel=self.num_rel)
         elif "DGL" in self.graph_type:
             return dglnn.RelGraphConv(in_channels,
                                       out_channels,
-                                      num_rels=kwargs["num_rel"])
+                                      num_rels=self.num_rel)
         elif "PyG" in self.graph_type or "COO" in self.graph_type:
             return pygnn.RGCNConv(in_channels,
                                   out_channels,
-                                  num_relations=kwargs["num_rel"])
+                                  num_relations=self.num_rel)
         else:
             assert (0)
 
