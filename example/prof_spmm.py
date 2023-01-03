@@ -63,7 +63,7 @@ def start_from_zero(idx):
 def to_torch_cuda(arr):
     return torch.tensor(arr, dtype=torch.int64, device='cuda')
 
-
+# partition the graph by degree
 def preprocess(ptr, idx):
     ptr = ptr.cpu().numpy()
     idx = idx.cpu().numpy()
