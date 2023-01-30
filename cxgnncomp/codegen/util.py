@@ -11,10 +11,11 @@ def compare(output1, output2):
         # exit()
 
 
-def prof(task_name, method, func):
+def prof(task_name, method, func, display=True):
     output = triton.testing.do_bench(func)
     output2 = []
     for item in output:
         output2.append("{:.4f}".format(item))
-    print(f"{task_name} {method}:", output2)
+    if display:
+        print(f"{task_name} {method}:", output2)
     return output

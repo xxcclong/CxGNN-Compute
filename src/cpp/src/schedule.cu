@@ -59,3 +59,10 @@ std::vector<torch::Tensor> rel_schedule(Tensor csr_ptr, Tensor csr_idx,
   output.push_back(rel_num_node_in_layer_tensor);
   return output;
 }
+
+std::vector<torch::Tensor> deg_schedule(Tensor csr_ptr, Tensor csr_idx,
+                                        Tensor num_node_in_layer,
+                                        int deg_thres) {
+  std::vector<torch::Tensor> output;
+  return output;
+}

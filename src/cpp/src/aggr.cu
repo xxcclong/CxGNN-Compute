@@ -597,11 +597,61 @@ __global__ void aggr_rgcn_direct_kernel(Index *ptr, Index *idx, float *vin,
   }
 }
 
+__global__ void aggr_rgcn_direct_bwd_kernel(Index *ptr, Index *idx,
+                                        float *vout_grad, Index num_v, int INFEATURE,
+                                        int OUTFEATURE, int num_rel,
+                                        float *weight, 
+                                        float *output_vin_grad,
+                                        int *etype) {
+  int block_size = blockDim.x * blockDim.y;
+  int row = blockIdx.x * blockDim.y + threadIdx.y;
+  if (row >= num_v) return;
+  int lane = threadIdx.x;
+  int warpid = threadIdx.y;
+
+  const int begin = ptr[row], end = ptr[row + 1];
+  const int whichv_fea = row * OUTFEATURE;
+
+  extern __shared__ float sh_rgcn[];
+  int *shared_idx = (int *)(sh_rgcn + warpid * 32);
+  int *shared_etype = (int *)(sh_rgcn + block_size + warpid * 32);
+  int intimes = (INFEATURE + 31) / 32;
+  int outtimes = (OUTFEATURE + 31) / 32;
+  for (int cas = 0; cas < intimes; cas++) {
+    // working on col : cas * 32 + lane
+    int thisinfea = cas * 32 + lane;
+    float rs = 0;
+    for (int i = begin; i < end; i += 32) {
+      shared_idx[lane] = idx[i + lane] * INFEATURE;
+      shared_etype[lane] = etype[i + lane] * INFEATURE * OUTFEATURE;
+      int jlimit = 32, j = 0;
+      if (i + 32 >= end) jlimit = end - i;
+      for (j = 0; j < jlimit; j++) {
+        // TILING 1
+        int theweight = shared_etype[j];
+        for (int t = 0; t < outtimes; t++) {
+          float val = vout_grad[whichv_fea + t * 32 + lane];
+          for (int k = 0; k < 32; k++) {
+            if (k + t * 32 < OUTFEATURE)
+              rs += __shfl_sync(0xffffffff, val, k, 32) *
+                    weight[theweight + (t * 32 + k) + thisinfea * OUTFEATURE];
+          }
+        }
+        if (thisinfea < INFEATURE) atomicAdd(&output_vin_grad[shared_idx[j] * INFEATURE + thisinfea], rs);
+      }
+    }
+  }
+}
+
 torch::Tensor AggrRelDirectFunction::forward(
     AutogradContext *ctx, torch::Tensor input, torch::Tensor ptr,
     torch::Tensor idx, torch::Tensor weights, torch::Tensor rel, Index num_node,
     int num_rel) {
-  ctx->save_for_backward({input, ptr, idx, rel});
+  ctx->save_for_backward({input, weights});
+
+  ctx->saved_data["ptr"] = (int64_t)ptr.data<Index>();
+  ctx->saved_data["idx"] = (int64_t)idx.data<Index>();
+  ctx->saved_data["rel"] = (int64_t)rel.data<int>();
   if (num_node == 0) num_node = ptr.sizes()[0] - 1;
   ctx->saved_data["num_node"] = (int64_t)num_node;
   ctx->saved_data["num_rel"] = (int64_t)num_rel;
@@ -612,7 +662,7 @@ torch::Tensor AggrRelDirectFunction::forward(
   ASSERTWITH(feat_len == weights.sizes()[1], "feat_len weight size {} {}",
              feat_len, weights.sizes()[1]);
   ASSERT(feat_len % 32 == 0);
-  ASSERT(out_feat_len % 32 == 0);
+  // ASSERT(out_feat_len % 32 == 0);
   ASSERT(input.device().index() >= 0);
   checkCudaErrors(cudaSetDevice(input.device().index()));
   // auto output = input.new_zeros({input.sizes()[0] / num_rel, feat_len});
@@ -632,6 +682,45 @@ torch::Tensor AggrRelDirectFunction::forward(
       weights.data<float>(), rel.data<int>());
   return output;
 }
+
+
+tensor_list AggrRelDirectFunction::backward(AutogradContext *ctx,
+                                            tensor_list grad_outputs) {
+  auto saved = ctx->get_saved_variables();
+  auto input = saved[0];
+  auto weights = saved[1];
+  Index *ptr = (Index *)(ctx->saved_data["ptr"].toInt());
+  Index *idx = (Index *)(ctx->saved_data["idx"].toInt());
+  int *rel = (int *)(ctx->saved_data["rel"].toInt());
+  auto grad_output = grad_outputs[0];
+  auto grad_input = torch::zeros_like(input);
+  auto grad_weight = torch::zeros_like(weights);
+  int num_node = ctx->saved_data["num_node"].toInt();
+  int num_rel = ctx->saved_data["num_rel"].toInt();
+  int feat_len = input.sizes().back();  // input: [nodes, heads, channels]
+  int out_feat_len = weights.sizes().back();
+
+  int block_size = 256;
+  int tmp_target_in_block = block_size / 32;
+  dim3 grid, block;
+  grid.x = (num_node + tmp_target_in_block - 1) / tmp_target_in_block;
+  block.x = 32;
+  block.y = block_size / 32;
+  int shared_size = block_size * 2 * sizeof(int);
+  // aggr_rgcn_direct_bwd_kernel<<< grid, block, shared_size >>>(ptr, idx,
+  //                             grad_output.data<float>(), num_node, feat_len,
+  //                             out_feat_len, num_rel,
+  //                             weights.data<float>(), 
+  //                             grad_input.data<float>(),
+  //                             rel);
+
+  return {grad_input, torch::Tensor(), torch::Tensor(), grad_weight, 
+  torch::Tensor(),torch::Tensor(),torch::Tensor()};
+}
+
+    // AutogradContext *ctx, torch::Tensor input, torch::Tensor ptr,
+    // torch::Tensor idx, torch::Tensor weights, torch::Tensor rel, Index num_node,
+    // int num_rel) {
 
 torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
                                     torch::Tensor idx, torch::Tensor weights,
@@ -657,12 +746,6 @@ torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
       output.data<float>(), num_node, feat_len, out_feat_len, num_rel,
       weights.data<float>(), rel.data<int>());
   return output;
-}
-
-tensor_list AggrRelDirectFunction::backward(AutogradContext *ctx,
-                                            tensor_list grad_outputs) {
-  ASSERTWITH(0, "not implemented");
-  return {torch::Tensor()};
 }
 
 torch::Tensor aggr_rel(torch::Tensor input, torch::Tensor ptr,
@@ -774,21 +857,21 @@ __global__ void gen_edge_type_mag240m_kernel(Index *ptr, Index *idx,
 #pragma unroll
   for (Index i = begin + lane; i < end; i += 32) {
     Index neighbor_id = sub_to_full[idx[i]];
-    if (center_id < PAPER_NUM) {
+    if (center_id < PAPER_NUM) { // center=Paper
       if (neighbor_id < PAPER_NUM)
         etype[i] = 0;
       else if (neighbor_id < PAPER_AUTHOR_NUM)
         etype[i] = 1;
       else
         assert(0);  // no paper-institute edge
-    } else if (center_id < PAPER_AUTHOR_INSTITUTE_NUM) {
+    } else if (center_id < PAPER_AUTHOR_NUM) { // center=Author
       if (neighbor_id < PAPER_NUM)
         etype[i] = 2;
       else if (neighbor_id < PAPER_AUTHOR_NUM)
         assert(0);  // no author-author edge
       else
         etype[i] = 3;
-    } else {
+    } else { // center=Institute
       if (neighbor_id < PAPER_NUM)
         assert(0);  // no institute-paper edge
       else if (neighbor_id < PAPER_AUTHOR_NUM)
@@ -801,7 +884,7 @@ __global__ void gen_edge_type_mag240m_kernel(Index *ptr, Index *idx,
 
 torch::Tensor gen_edge_type_mag240m(torch::Tensor ptr, torch::Tensor idx,
                                     torch::Tensor sub_to_full) {
-  torch::Tensor etype = torch::empty_like(idx);
+  torch::Tensor etype = torch::zeros_like(idx);
   Index num_node = ptr.sizes()[0] - 1;
   int block_size = 512;
   int per_block = 512 / 32;
@@ -831,7 +914,7 @@ torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
     //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
     //     block_map);
   } else if (cpw == 64) {
-    run_spmm_sharedmem_step_2<<<dim3(grid_x, grid_y, 1),
+    run_spmm_sharedmem_2<<<dim3(grid_x, grid_y, 1),
                                 dim3(block_x, block_y, 1),
                                 block_x * block_y * sizeof(int)>>>(
         ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
@@ -843,7 +926,7 @@ torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
     //     block_map);
 
   } else if (cpw == 128) {
-    run_spmm_sharedmem_step_4<<<dim3(grid_x, grid_y, 1),
+    run_spmm_sharedmem_4<<<dim3(grid_x, grid_y, 1),
                                 dim3(block_x, block_y, 1),
                                 block_x * block_y * sizeof(int)>>>(
         ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
@@ -854,7 +937,7 @@ torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
     //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
     //     block_map);
   } else if (cpw == 256) {
-    run_spmm_8<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
+    run_spmm_sharedmem_8<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
         ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
         output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
         block_map);

@@ -107,6 +107,19 @@ class RGCNOP(torch.autograd.Function):
             grad_weights.append(torch.mm(x_t, grad_selective))
         return grad_x, torch.stack(grad_weights), None, None, None, None
 
+def RGCNOP_sorted(x, weights, src, dst, num_feat_per_rel, num_center):
+    num_rel = weights.shape[0]
+    output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
+    cnt = 0
+    for i in range(num_rel):
+        s = src[cnt:cnt + num_feat_per_rel[i]]
+        d = dst[cnt:cnt + num_feat_per_rel[i]]
+        cnt += num_feat_per_rel[i]
+        feat = x[s]
+        transformed_feat = F.linear(feat, weights[i].T)
+        output.index_add_(0, d, transformed_feat)
+    return output
+
 
 class RGCNOP2(torch.autograd.Function):
 
