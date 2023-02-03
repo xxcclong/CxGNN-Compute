@@ -3,7 +3,9 @@
 #include "aggr.h"
 #include "dgsparse.h"
 #include "edge_softmax.h"
+#include "rel_spmm.h"
 #include "schedule.h"
+#include "spmm_host.h"
 namespace py = pybind11;
 using namespace pybind11::literals;
 
@@ -14,9 +16,6 @@ void init_compute(py::module &m) {
         "Sage sum forward edge value");
   m.def("sage_mean_forward", &sage_mean_forward, "Sage mean forward");
   m.def("sage_sum_forward", &sage_sum_forward, "Sage sum forward");
-  m.def("aggr_rel", &aggr_rel, "");
-  m.def("aggr_rel_direct", &aggr_rel_direct, "");
-  m.def("aggr_rgcn_direct_func", &aggr_rgcn_direct_func, "");
   m.def("gather", &gather, "gather");
   m.def("edge_attention", &edge_softmax_forward, "ptr"_a, "idx"_a, "att_dst"_a,
         "att_src"_a, "num_edge"_a, "relu_l"_a, "Edge attention");
@@ -27,9 +26,32 @@ void init_compute(py::module &m) {
   m.def("selective_aggr", &selective_aggr_fwd, "selective aggr");
   m.def("selective_aggr_bwd", &selective_aggr_bwd, "selective aggr");
   m.def("gen_edge_type_mag240m", &gen_edge_type_mag240m, "");
+}
+
+void init_spmm(py::module &m) {
   m.def("run_spmm_configurable", &run_spmm_configurable, "run spmm");
   m.def("run_spmm_configurable_int32", &run_spmm_configurable_int32,
         "run spmm");
+}
+
+void init_rel_spmm(py::module &m) {
+  m.def("aggr_rel", &aggr_rel, "");
+  m.def("aggr_rel_direct", &aggr_rel_direct, "");
+  m.def("aggr_rgcn_direct_func", &aggr_rgcn_direct_func, "");
+}
+
+void init_spmm_multihead(py::module &m) {
+  py::enum_<SPMM_MULTIHEAD_SCHEDULE>(m, "SPMM_MULTIHEAD_SCHEDULE")
+      .value("Naive", SPMM_MULTIHEAD_SCHEDULE::Naive)
+      .value("PreReduce", SPMM_MULTIHEAD_SCHEDULE::PreReduce)
+      .value("Optimal", SPMM_MULTIHEAD_SCHEDULE::Optimal)
+      .export_values();
+  m.def("spmm_multihead", &spmm_multihead, py::arg("ptr"), py::arg("idx"),
+        py::arg("val"), py::arg("vin"), py::arg("num_node"),
+        py::arg("schedule") = SPMM_MULTIHEAD_SCHEDULE::Optimal,
+        py::arg("block_size") = 256);
+  m.def("run_spmm_multihead_configurable", &run_spmm_multihead_configurable,
+        "");
 }
 
 void assertTensor(torch::Tensor &T, torch::ScalarType type) {
@@ -75,6 +97,9 @@ void init_dgsparse(py::module &m) {
 
 PYBIND11_MODULE(cxgnncomp_backend, m) {
   m.doc() = "A Supa Fast Graph GNN compute library";
+  init_spmm(m);
+  init_rel_spmm(m);
+  init_spmm_multihead(m);
   init_compute(m);
   init_dgsparse(m);
 }

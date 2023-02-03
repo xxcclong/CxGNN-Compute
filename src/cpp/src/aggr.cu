@@ -2,71 +2,6 @@
 #include "aggr_kernel.h"
 #include "common.h"
 
-__global__ void aggr_rel_fwd(Index *ptr, Index *idx, int *rel, float *vin,
-                             float *vout, int num_node, int INFEATURE,
-                             Index transform_size) {
-  int lane = threadIdx.x & 31;
-  int row = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
-  int col = (threadIdx.y << 5) + lane;
-  if (row >= num_node) return;
-  Index begin = ptr[row], end = ptr[row + 1];
-  float rs = 0.0f;
-  int theidx;
-  int therel;
-  int jlimit;
-#pragma unroll
-  for (Index i = begin; i < end; i += 32) {
-    if (i + lane < end) {
-      theidx = idx[i + lane];
-      therel = rel[i + lane];
-    }
-    jlimit = 32;
-    if (end - i < 32) jlimit = end - i;
-    for (int j = 0; j < jlimit; ++j) {
-      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
-      int rel_id = __shfl_sync(0xffffffff, therel, j, 32);
-      // rs += vin[neighbor_id * INFEATURE + col];
-      // assert(rel_id >= 0 && rel_id < 7);
-      rs += vin[transform_size * rel_id + neighbor_id * INFEATURE + col];
-    }
-  }
-  if (col < INFEATURE) vout[row * INFEATURE + col] = rs;
-}
-
-__global__ void aggr_rel_bwd(
-    Index *ptr, Index *idx, int *rel, float *grads_in, float *vout_fwd,
-    float *grads_out, int num_node, int INFEATURE,
-    Index transform_size)  // push the gradient to the neighbor vertex
-{
-  int lane = threadIdx.x & 31;
-  int row = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
-  int col = (threadIdx.y << 5) + lane;
-  if (row >= num_node) return;
-  Index begin = ptr[row], end = ptr[row + 1];
-  float grad = 0.0f;
-  if (col < INFEATURE) {
-    grad = grads_in[row * INFEATURE + col];
-  }
-  int theidx, jlimit, therel;
-#pragma unroll
-  for (Index i = begin; i < end; i += 32) {
-    if (i + lane < end) {
-      theidx = idx[i + lane] * INFEATURE;
-      therel = rel[i + lane];
-    }
-    jlimit = 32;
-    if (end - i < 32) jlimit = end - i;
-    for (int j = 0; j < jlimit; ++j) {
-      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
-      int rel_id = __shfl_sync(0xffffffff, therel, j, 32);
-      if (col < INFEATURE) {
-        atomicAdd(grads_out + rel_id * transform_size + neighbor_id + col,
-                  grad);
-      }
-    }
-  }
-}
-
 __global__ void gen_fwd_with_target(Index *ptr, Index *idx, Index *targets,
                                     float *val, float *vin, float *vout,
                                     int num_target, int INFEATURE) {
@@ -207,31 +142,24 @@ torch::Tensor sageForwardImpl(AutogradContext *ctx, torch::Tensor input,
   block.y = ceil_feat_len / 32;
   block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
 
-  if (edge_value.sizes()[0] == 0) {
+  if (edge_value.sizes()[0] == 0) {  // no edge value
     if (aggr_type == AggrType::Mean) {
       gen_fwd_mean<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
                                     input.data<float>(), output.data<float>(),
                                     num_node, feat_len);
     } else if (aggr_type == AggrType::Sum) {
-      // gen_fwd_sum<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
-      //                              input.data<float>(), output.data<float>(),
-      //                              num_node, feat_len);
-      block.x = 128;
-      block.y = 1;
-      int num_target_in_block = block.x * 4 / feat_len;
-      grid.x = (num_node + num_target_in_block - 1) / num_target_in_block;
-      fwd_sum_all_x<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
-                                     input.data<float>(), output.data<float>(),
-                                     num_node, feat_len);
+      gen_fwd_sum<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
+                                   input.data<float>(), output.data<float>(),
+                                   num_node, feat_len);
     }
   } else {
     if (aggr_type == AggrType::Mean) {
-      if (edge_value.sizes().size() == 1) {
+      if (edge_value.sizes().size() == 1) {  // single head aggregation
         ASSERTWITH(0, "DO NOT use mean with edge value");
         gen_fwd_mean_edge_value<<<grid, block>>>(
             ptr.data<Index>(), idx.data<Index>(), edge_value.data<float>(),
             input.data<float>(), output.data<float>(), num_node, feat_len);
-      } else {
+      } else {  // multi head aggregation
         ASSERTWITH(0, "DO NOT use mean with edge value");
         grid.x = (num_node * num_head + (block_size / ceil_feat_len) - 1) /
                  (block_size / ceil_feat_len);
@@ -241,11 +169,11 @@ torch::Tensor sageForwardImpl(AutogradContext *ctx, torch::Tensor input,
             num_head);
       }
     } else if (aggr_type == AggrType::Sum) {
-      if (edge_value.sizes().size() == 1) {
+      if (edge_value.sizes().size() == 1) {  // single head aggregation
         gen_fwd_sum_edge_value<<<grid, block>>>(
             ptr.data<Index>(), idx.data<Index>(), edge_value.data<float>(),
             input.data<float>(), output.data<float>(), num_node, feat_len);
-      } else {
+      } else {  // multi head aggregation
         grid.x = (num_node * num_head + (block_size / ceil_feat_len) - 1) /
                  (block_size / ceil_feat_len);
         gen_fwd_sum_edge_value_multi_head<<<grid, block>>>(
@@ -374,56 +302,6 @@ tensor_list SAGEEdgeValueFunction::backward(AutogradContext *ctx,
           torch::Tensor(), torch::Tensor()};
 }
 
-torch::Tensor GatherFunction::forward(AutogradContext *ctx, torch::Tensor input,
-                                      torch::Tensor dest, Index num_node) {
-  ctx->save_for_backward({input, dest});
-  ASSERT(num_node > 0);
-
-  int feat_len = input.sizes()[1];
-  int num_edge = dest.sizes()[0];
-  ASSERT(input.device().index() >= 0);
-  checkCudaErrors(cudaSetDevice(input.device().index()));
-  auto output = input.new_zeros({num_node, feat_len});
-  output.requires_grad_(true);
-  int block_size = 512;
-  dim3 grid, block;
-  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
-  block_size = std::max(block_size, ceil_feat_len);
-  grid.x = (num_edge + (block_size / ceil_feat_len) - 1) /
-           (block_size / ceil_feat_len);
-  block.y = ceil_feat_len / 32;
-  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
-
-  gather_fwd<<<grid, block>>>(input.data<float>(), dest.data<Index>(),
-                              output.data<float>(), num_edge, feat_len);
-  return output;
-}
-
-tensor_list GatherFunction::backward(AutogradContext *ctx,
-                                     tensor_list grad_outputs) {
-  auto saved = ctx->get_saved_variables();
-  auto input = saved[0];
-  auto dest = saved[1];
-  auto grad_output = grad_outputs[0];
-  auto grad_input = torch::empty_like(input);
-
-  int num_edge = grad_input.sizes()[0];
-  int feat_len = input.sizes()[1];
-  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
-  int block_size = 512;
-  block_size = std::max(block_size, ceil_feat_len);
-
-  dim3 grid, block;
-  grid.x = (num_edge + (block_size / ceil_feat_len) - 1) /
-           (block_size / ceil_feat_len);
-  block.y = ceil_feat_len / 32;
-  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
-  ASSERT(block.x % 32 == 0);
-  gather_bwd<<<grid, block>>>(grad_output.data<float>(), dest.data<Index>(),
-                              grad_input.data<float>(), num_edge, feat_len);
-  return {grad_input, torch::Tensor(), torch::Tensor()};
-}
-
 // torch::Tensor AggrWithTargetFunction::forward(AutogradContext *ctx,
 // torch::Tensor input,
 //                                               torch::Tensor ptr,
@@ -488,280 +366,6 @@ tensor_list GatherFunction::backward(AutogradContext *ctx,
 //   return {grad_input, torch::Tensor(), torch::Tensor()};
 // }
 
-torch::Tensor AggrRelFunction::forward(AutogradContext *ctx,
-                                       torch::Tensor input, torch::Tensor ptr,
-                                       torch::Tensor idx, torch::Tensor rel,
-                                       Index num_node, int num_rel) {
-  ctx->save_for_backward({input, ptr, idx, rel});
-  if (num_node == 0) num_node = ptr.sizes()[0] - 1;
-  ctx->saved_data["num_node"] = (int64_t)num_node;
-  ctx->saved_data["num_rel"] = (int64_t)num_rel;
-
-  int feat_len = input.sizes()[1];
-  ASSERT(input.device().index() >= 0);
-  checkCudaErrors(cudaSetDevice(input.device().index()));
-  // auto output = input.new_zeros({input.sizes()[0] / num_rel, feat_len});
-  // ASSERT(output.device().index() == input.device().index());
-  // output.requires_grad_(true);
-  auto output = input.new_zeros({num_node, feat_len});
-  int block_size = 512;
-  dim3 grid, block;
-  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
-  block_size = std::max(block_size, ceil_feat_len);
-  grid.x = (num_node + (block_size / ceil_feat_len) - 1) /
-           (block_size / ceil_feat_len);
-  block.y = ceil_feat_len / 32;
-  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
-  Index transform_size = (input.sizes()[0] / num_rel) * input.sizes()[1];
-  aggr_rel_fwd<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
-                                rel.data<int>(), input.data<float>(),
-                                output.data<float>(), num_node, feat_len,
-                                transform_size);
-  return output;
-}
-
-tensor_list AggrRelFunction::backward(AutogradContext *ctx,
-                                      tensor_list grad_outputs) {
-  auto saved = ctx->get_saved_variables();
-  auto input = saved[0];
-  auto ptr = saved[1];
-  auto idx = saved[2];
-  auto rel = saved[3];
-  auto grad_output = grad_outputs[0];
-  auto grad_input = torch::zeros_like(input);
-
-  int num_node = ctx->saved_data["num_node"].toInt();
-  int num_rel = ctx->saved_data["num_rel"].toInt();
-  int feat_len = input.sizes()[1];
-  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
-  int block_size = 512;
-  block_size = std::max(block_size, ceil_feat_len);
-
-  dim3 grid, block;
-  grid.x = (num_node + (block_size / ceil_feat_len) - 1) /
-           (block_size / ceil_feat_len);
-  block.y = ceil_feat_len / 32;
-  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
-  ASSERT(block.x % 32 == 0);
-  Index transform_size = (input.sizes()[0] / num_rel) * input.sizes()[1];
-  aggr_rel_bwd<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
-                                rel.data<int>(), grad_output.data<float>(),
-                                input.data<float>(), grad_input.data<float>(),
-                                num_node, feat_len, transform_size);
-  return {grad_input,      torch::Tensor(), torch::Tensor(), torch::Tensor(),
-          torch::Tensor(), torch::Tensor(), torch::Tensor()};
-}
-
-__global__ void aggr_rgcn_direct_kernel(Index *ptr, Index *idx, float *vin,
-                                        float *vout, Index num_v, int INFEATURE,
-                                        int OUTFEATURE, int num_rel,
-                                        float *weight, int *etype) {
-  int block_size = blockDim.x * blockDim.y;
-  int row = blockIdx.x * blockDim.y + threadIdx.y;
-  if (row >= num_v) return;
-  int lane = threadIdx.x;
-  int warpid = threadIdx.y;
-
-  const int begin = ptr[row], end = ptr[row + 1];
-  const int whichv_fea = row * OUTFEATURE;
-
-  extern __shared__ float sh_rgcn[];
-  int *shared_idx = (int *)(sh_rgcn + warpid * 32);
-  int *shared_etype = (int *)(sh_rgcn + block_size + warpid * 32);
-  // assuming kInFeatLen % 32 == 0
-  int intimes = (INFEATURE + 31) / 32;
-  int outtimes = (OUTFEATURE + 31) / 32;
-  for (int cas = 0; cas < outtimes; cas++) {
-    // working on col : cas * 32 + lane
-    int thisoutfea = cas * 32 + lane;
-    float rs = 0;
-    for (int i = begin; i < end; i += 32) {
-      shared_idx[lane] = idx[i + lane] * INFEATURE;
-      shared_etype[lane] = etype[i + lane] * INFEATURE * OUTFEATURE;
-      int jlimit = 32, j = 0;
-      if (i + 32 >= end) jlimit = end - i;
-      for (j = 0; j < jlimit; j++) {
-        // TILING 1
-        int theweight = shared_etype[j];
-        for (int t = 0; t < intimes; t++) {
-          float val = vin[shared_idx[j] + t * 32 + lane];
-          for (int k = 0; k < 32; k++) {
-            if (k + t * 32 < INFEATURE)
-              rs += __shfl_sync(0xffffffff, val, k, 32) *
-                    weight[theweight + (t * 32 + k) * OUTFEATURE + thisoutfea];
-          }
-        }
-      }
-    }
-    if (thisoutfea < OUTFEATURE) atomicAdd(&vout[whichv_fea + thisoutfea], rs);
-  }
-}
-
-__global__ void aggr_rgcn_direct_bwd_kernel(Index *ptr, Index *idx,
-                                        float *vout_grad, Index num_v, int INFEATURE,
-                                        int OUTFEATURE, int num_rel,
-                                        float *weight, 
-                                        float *output_vin_grad,
-                                        int *etype) {
-  int block_size = blockDim.x * blockDim.y;
-  int row = blockIdx.x * blockDim.y + threadIdx.y;
-  if (row >= num_v) return;
-  int lane = threadIdx.x;
-  int warpid = threadIdx.y;
-
-  const int begin = ptr[row], end = ptr[row + 1];
-  const int whichv_fea = row * OUTFEATURE;
-
-  extern __shared__ float sh_rgcn[];
-  int *shared_idx = (int *)(sh_rgcn + warpid * 32);
-  int *shared_etype = (int *)(sh_rgcn + block_size + warpid * 32);
-  int intimes = (INFEATURE + 31) / 32;
-  int outtimes = (OUTFEATURE + 31) / 32;
-  for (int cas = 0; cas < intimes; cas++) {
-    // working on col : cas * 32 + lane
-    int thisinfea = cas * 32 + lane;
-    float rs = 0;
-    for (int i = begin; i < end; i += 32) {
-      shared_idx[lane] = idx[i + lane] * INFEATURE;
-      shared_etype[lane] = etype[i + lane] * INFEATURE * OUTFEATURE;
-      int jlimit = 32, j = 0;
-      if (i + 32 >= end) jlimit = end - i;
-      for (j = 0; j < jlimit; j++) {
-        // TILING 1
-        int theweight = shared_etype[j];
-        for (int t = 0; t < outtimes; t++) {
-          float val = vout_grad[whichv_fea + t * 32 + lane];
-          for (int k = 0; k < 32; k++) {
-            if (k + t * 32 < OUTFEATURE)
-              rs += __shfl_sync(0xffffffff, val, k, 32) *
-                    weight[theweight + (t * 32 + k) + thisinfea * OUTFEATURE];
-          }
-        }
-        if (thisinfea < INFEATURE) atomicAdd(&output_vin_grad[shared_idx[j] * INFEATURE + thisinfea], rs);
-      }
-    }
-  }
-}
-
-torch::Tensor AggrRelDirectFunction::forward(
-    AutogradContext *ctx, torch::Tensor input, torch::Tensor ptr,
-    torch::Tensor idx, torch::Tensor weights, torch::Tensor rel, Index num_node,
-    int num_rel) {
-  ctx->save_for_backward({input, weights});
-
-  ctx->saved_data["ptr"] = (int64_t)ptr.data<Index>();
-  ctx->saved_data["idx"] = (int64_t)idx.data<Index>();
-  ctx->saved_data["rel"] = (int64_t)rel.data<int>();
-  if (num_node == 0) num_node = ptr.sizes()[0] - 1;
-  ctx->saved_data["num_node"] = (int64_t)num_node;
-  ctx->saved_data["num_rel"] = (int64_t)num_rel;
-
-  // weight shape = [rel, in_feat, out_feat]
-  int feat_len = input.sizes()[1];
-  int out_feat_len = weights.sizes()[2];
-  ASSERTWITH(feat_len == weights.sizes()[1], "feat_len weight size {} {}",
-             feat_len, weights.sizes()[1]);
-  ASSERT(feat_len % 32 == 0);
-  // ASSERT(out_feat_len % 32 == 0);
-  ASSERT(input.device().index() >= 0);
-  checkCudaErrors(cudaSetDevice(input.device().index()));
-  // auto output = input.new_zeros({input.sizes()[0] / num_rel, feat_len});
-  // ASSERT(output.device().index() == input.device().index());
-  // output.requires_grad_(true);
-  auto output = input.new_zeros({num_node, out_feat_len});
-  int block_size = 256;
-  int tmp_target_in_block = block_size / 32;
-  dim3 grid, block;
-  grid.x = (num_node + tmp_target_in_block - 1) / tmp_target_in_block;
-  block.x = 32;
-  block.y = block_size / 32;
-  int shared_size = block_size * 2 * sizeof(int);
-  aggr_rgcn_direct_kernel<<<grid, block, shared_size>>>(
-      ptr.data<Index>(), idx.data<Index>(), input.data<float>(),
-      output.data<float>(), num_node, feat_len, out_feat_len, num_rel,
-      weights.data<float>(), rel.data<int>());
-  return output;
-}
-
-
-tensor_list AggrRelDirectFunction::backward(AutogradContext *ctx,
-                                            tensor_list grad_outputs) {
-  auto saved = ctx->get_saved_variables();
-  auto input = saved[0];
-  auto weights = saved[1];
-  Index *ptr = (Index *)(ctx->saved_data["ptr"].toInt());
-  Index *idx = (Index *)(ctx->saved_data["idx"].toInt());
-  int *rel = (int *)(ctx->saved_data["rel"].toInt());
-  auto grad_output = grad_outputs[0];
-  auto grad_input = torch::zeros_like(input);
-  auto grad_weight = torch::zeros_like(weights);
-  int num_node = ctx->saved_data["num_node"].toInt();
-  int num_rel = ctx->saved_data["num_rel"].toInt();
-  int feat_len = input.sizes().back();  // input: [nodes, heads, channels]
-  int out_feat_len = weights.sizes().back();
-
-  int block_size = 256;
-  int tmp_target_in_block = block_size / 32;
-  dim3 grid, block;
-  grid.x = (num_node + tmp_target_in_block - 1) / tmp_target_in_block;
-  block.x = 32;
-  block.y = block_size / 32;
-  int shared_size = block_size * 2 * sizeof(int);
-  // aggr_rgcn_direct_bwd_kernel<<< grid, block, shared_size >>>(ptr, idx,
-  //                             grad_output.data<float>(), num_node, feat_len,
-  //                             out_feat_len, num_rel,
-  //                             weights.data<float>(), 
-  //                             grad_input.data<float>(),
-  //                             rel);
-
-  return {grad_input, torch::Tensor(), torch::Tensor(), grad_weight, 
-  torch::Tensor(),torch::Tensor(),torch::Tensor()};
-}
-
-    // AutogradContext *ctx, torch::Tensor input, torch::Tensor ptr,
-    // torch::Tensor idx, torch::Tensor weights, torch::Tensor rel, Index num_node,
-    // int num_rel) {
-
-torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
-                                    torch::Tensor idx, torch::Tensor weights,
-                                    torch::Tensor rel, Index num_node) {
-  int num_rel = weights.sizes()[0];
-  int feat_len = input.sizes()[1];
-  int out_feat_len = weights.sizes()[2];
-  ASSERTWITH(feat_len == weights.sizes()[1], "feat_len weight size {} {}",
-             feat_len, weights.sizes()[1]);
-  // ASSERT(feat_len % 32 == 0);
-  // ASSERT(out_feat_len % 32 == 0);
-  ASSERT(input.device().index() >= 0);
-  auto output = input.new_zeros({num_node, out_feat_len});
-  int block_size = 256;
-  int tmp_target_in_block = block_size / 32;
-  dim3 grid, block;
-  grid.x = (num_node + tmp_target_in_block - 1) / tmp_target_in_block;
-  block.x = 32;
-  block.y = block_size / 32;
-  int shared_size = block_size * 2 * sizeof(int);
-  aggr_rgcn_direct_kernel<<<grid, block, shared_size>>>(
-      ptr.data<Index>(), idx.data<Index>(), input.data<float>(),
-      output.data<float>(), num_node, feat_len, out_feat_len, num_rel,
-      weights.data<float>(), rel.data<int>());
-  return output;
-}
-
-torch::Tensor aggr_rel(torch::Tensor input, torch::Tensor ptr,
-                       torch::Tensor idx, torch::Tensor etype, Index num_node,
-                       int num_rel) {
-  return AggrRelFunction::apply(input, ptr, idx, etype, num_node, num_rel);
-}
-
-torch::Tensor aggr_rel_direct(torch::Tensor input, torch::Tensor ptr,
-                              torch::Tensor idx, torch::Tensor weights,
-                              torch::Tensor etype, Index num_node,
-                              int num_rel) {
-  return AggrRelDirectFunction::apply(input, ptr, idx, weights, etype, num_node,
-                                      num_rel);
-}
-
 torch::Tensor sage_mean_forward_edge_value(torch::Tensor input,
                                            torch::Tensor ptr, torch::Tensor idx,
                                            torch::Tensor edge_value,
@@ -786,6 +390,56 @@ torch::Tensor sage_mean_forward(torch::Tensor input, torch::Tensor ptr,
 torch::Tensor sage_sum_forward(torch::Tensor input, torch::Tensor ptr,
                                torch::Tensor idx, int num_node) {
   return SAGEFunction::apply(input, ptr, idx, num_node, AggrType::Sum);
+}
+
+torch::Tensor GatherFunction::forward(AutogradContext *ctx, torch::Tensor input,
+                                      torch::Tensor dest, Index num_node) {
+  ctx->save_for_backward({input, dest});
+  ASSERT(num_node > 0);
+
+  int feat_len = input.sizes()[1];
+  int num_edge = dest.sizes()[0];
+  ASSERT(input.device().index() >= 0);
+  checkCudaErrors(cudaSetDevice(input.device().index()));
+  auto output = input.new_zeros({num_node, feat_len});
+  output.requires_grad_(true);
+  int block_size = 512;
+  dim3 grid, block;
+  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
+  block_size = std::max(block_size, ceil_feat_len);
+  grid.x = (num_edge + (block_size / ceil_feat_len) - 1) /
+           (block_size / ceil_feat_len);
+  block.y = ceil_feat_len / 32;
+  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
+
+  gather_fwd<<<grid, block>>>(input.data<float>(), dest.data<Index>(),
+                              output.data<float>(), num_edge, feat_len);
+  return output;
+}
+
+tensor_list GatherFunction::backward(AutogradContext *ctx,
+                                     tensor_list grad_outputs) {
+  auto saved = ctx->get_saved_variables();
+  auto input = saved[0];
+  auto dest = saved[1];
+  auto grad_output = grad_outputs[0];
+  auto grad_input = torch::empty_like(input);
+
+  int num_edge = grad_input.sizes()[0];
+  int feat_len = input.sizes()[1];
+  int ceil_feat_len = ((feat_len + 31) / 32 * 32);
+  int block_size = 512;
+  block_size = std::max(block_size, ceil_feat_len);
+
+  dim3 grid, block;
+  grid.x = (num_edge + (block_size / ceil_feat_len) - 1) /
+           (block_size / ceil_feat_len);
+  block.y = ceil_feat_len / 32;
+  block.x = (block_size + ceil_feat_len - 1) / ceil_feat_len * 32;
+  ASSERT(block.x % 32 == 0);
+  gather_bwd<<<grid, block>>>(grad_output.data<float>(), dest.data<Index>(),
+                              grad_input.data<float>(), num_edge, feat_len);
+  return {grad_input, torch::Tensor(), torch::Tensor()};
 }
 
 torch::Tensor gather(torch::Tensor input /* O(E) */,
@@ -857,21 +511,21 @@ __global__ void gen_edge_type_mag240m_kernel(Index *ptr, Index *idx,
 #pragma unroll
   for (Index i = begin + lane; i < end; i += 32) {
     Index neighbor_id = sub_to_full[idx[i]];
-    if (center_id < PAPER_NUM) { // center=Paper
+    if (center_id < PAPER_NUM) {  // center=Paper
       if (neighbor_id < PAPER_NUM)
         etype[i] = 0;
       else if (neighbor_id < PAPER_AUTHOR_NUM)
         etype[i] = 1;
       else
-        assert(0);  // no paper-institute edge
-    } else if (center_id < PAPER_AUTHOR_NUM) { // center=Author
+        assert(0);                              // no paper-institute edge
+    } else if (center_id < PAPER_AUTHOR_NUM) {  // center=Author
       if (neighbor_id < PAPER_NUM)
         etype[i] = 2;
       else if (neighbor_id < PAPER_AUTHOR_NUM)
         assert(0);  // no author-author edge
       else
         etype[i] = 3;
-    } else { // center=Institute
+    } else {  // center=Institute
       if (neighbor_id < PAPER_NUM)
         assert(0);  // no institute-paper edge
       else if (neighbor_id < PAPER_AUTHOR_NUM)
@@ -893,116 +547,4 @@ torch::Tensor gen_edge_type_mag240m(torch::Tensor ptr, torch::Tensor idx,
       ptr.data<Index>(), idx.data<Index>(), sub_to_full.data<Index>(),
       etype.data<Index>(), num_node);
   return etype;
-}
-
-torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
-                                    torch::Tensor vin, Index num_node,
-                                    int grid_x, int grid_y, int block_x,
-                                    int block_y, int rpb, int cpb, int cpw,
-                                    int grid_map, int block_map) {
-  ASSERTWITH(vin.dim() == 2, "vin must be 2D");
-  int feat_len = vin.sizes().back();
-  auto output = vin.new_zeros({num_node, feat_len});
-  if (cpw == 32) {
-    run_spmm_sharedmem<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1),
-                         block_x * block_y * sizeof(int)>>>(
-        ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-        block_map);
-    // run_spmm<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
-    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-    //     block_map);
-  } else if (cpw == 64) {
-    run_spmm_sharedmem_2<<<dim3(grid_x, grid_y, 1),
-                                dim3(block_x, block_y, 1),
-                                block_x * block_y * sizeof(int)>>>(
-        ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-        block_map);
-    // run_spmm_2<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
-    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-    //     block_map);
-
-  } else if (cpw == 128) {
-    run_spmm_sharedmem_4<<<dim3(grid_x, grid_y, 1),
-                                dim3(block_x, block_y, 1),
-                                block_x * block_y * sizeof(int)>>>(
-        ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-        block_map);
-    // run_spmm_4<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
-    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-    //     block_map);
-  } else if (cpw == 256) {
-    run_spmm_sharedmem_8<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
-        ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-        block_map);
-  } else {
-    ASSERT(0);
-  }
-  return output;
-}
-
-torch::Tensor run_spmm_configurable_int32(torch::Tensor ptr, torch::Tensor idx,
-                                          torch::Tensor vin, Index num_node,
-                                          int grid_x, int grid_y, int block_x,
-                                          int block_y, int rpb, int cpb,
-                                          int cpw, int grid_map,
-                                          int block_map) {
-  ASSERTWITH(vin.dim() == 2, "vin must be 2D");
-  int feat_len = vin.sizes().back();
-  auto output = vin.new_zeros({num_node, feat_len});
-  if (cpw == 32) {
-    run_spmm_sharedmem_int<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y,
-    1),
-                             block_x * block_y * sizeof(int)>>>(
-        ptr.data<int>(), idx.data<int>(), vin.data<float>(),
-        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-        block_map);
-    // run_spmm<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
-    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-    //     block_map);
-  } else if (cpw == 64) {
-    run_spmm_sharedmem_step_2_int<<<dim3(grid_x, grid_y, 1),
-                                    dim3(block_x, block_y, 1),
-                                    block_x * block_y * sizeof(int)>>>(
-        ptr.data<int>(), idx.data<int>(), vin.data<float>(),
-        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-        block_map);
-    // run_spmm_2<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
-    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-    //     block_map);
-
-  } else if (cpw == 128) {
-    run_spmm_sharedmem_step_4_int<<<dim3(grid_x, grid_y, 1),
-                                    dim3(block_x, block_y, 1),
-                                    block_x * block_y * sizeof(int)>>>(
-        ptr.data<int>(), idx.data<int>(), vin.data<float>(),
-        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-        block_map);
-    // run_spmm_4<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
-    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-    //     block_map);
-  } else if (cpw == 256) {
-    run_spmm_sharedmem_step_8_int<<<dim3(grid_x, grid_y, 1),
-                                    dim3(block_x, block_y, 1),
-                                    block_x * block_y * sizeof(int)>>>(
-        ptr.data<int>(), idx.data<int>(), vin.data<float>(),
-        output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-        block_map);
-    // run_spmm_8<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1)>>>(
-    //     ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
-    //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
-    //     block_map);
-  } else {
-    ASSERT(0);
-  }
-  return output;
 }

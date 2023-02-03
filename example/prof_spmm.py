@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import cxgnncomp as cxgc
+import cxgnncomp_backend
 from cxgnncomp.codegen.util import compare
 from torch_scatter import segment_csr, gather_csr
 
@@ -63,6 +64,7 @@ def sort_graph(ptr, idx):
         new_idx.extend(idx[ptr[i]:ptr[i + 1]])
     return new_ptr, new_idx
 
+
 def partition_node_dim(ptr, idx, target):
     num_parts = 8
     num_element_per_part = (len(ptr) - 1) // num_parts + 1
@@ -73,13 +75,19 @@ def partition_node_dim(ptr, idx, target):
     # idx = idx.cpu().numpy()
     for i in range(num_parts):
         if i == num_parts - 1:
-            new_ptrs.append(ptr[i * num_element_per_part:] - ptr[i * num_element_per_part])
-            new_idxs.append(idx[ptr[i * num_element_per_part] : ptr[-1]])
+            new_ptrs.append(ptr[i * num_element_per_part:] -
+                            ptr[i * num_element_per_part])
+            new_idxs.append(idx[ptr[i * num_element_per_part]:ptr[-1]])
             new_targets.append(target[i * num_element_per_part:])
         else:
-            new_ptrs.append(ptr[i * num_element_per_part:(i + 1) * num_element_per_part] - ptr[i * num_element_per_part])
-            new_idxs.append(idx[ptr[i * num_element_per_part] : ptr[(i + 1) * num_element_per_part]])
-            new_targets.append(target[i * num_element_per_part:(i + 1) * num_element_per_part])
+            new_ptrs.append(ptr[i * num_element_per_part:(i + 1) *
+                                num_element_per_part] -
+                            ptr[i * num_element_per_part])
+            new_idxs.append(
+                idx[ptr[i * num_element_per_part]:ptr[(i + 1) *
+                                                      num_element_per_part]])
+            new_targets.append(target[i * num_element_per_part:(i + 1) *
+                                      num_element_per_part])
     return new_ptrs, new_idxs, new_targets
 
 
@@ -119,14 +127,16 @@ def preprocess_neighbor_partition(ptr, idx, num_node_overall):
         ret_ptrs.append(new_ptrs[0])
         ret_idxs.append(new_idxs[0])
         ret_targets.append(new_targets[0])
-        for i in range(1, num_parts): # not the first part
-            retp, reti, rett = partition_node_dim(new_ptrs[i], new_idxs[i], new_targets[i])
+        for i in range(1, num_parts):  # not the first part
+            retp, reti, rett = partition_node_dim(new_ptrs[i], new_idxs[i],
+                                                  new_targets[i])
             ret_ptrs.extend(retp)
             ret_idxs.extend(reti)
             ret_targets.extend(rett)
         return ret_ptrs, ret_idxs, ret_targets
     else:
         return new_ptrs, new_idxs, new_targets
+
 
 def get_sub_mat(ptr, idx, node_l, node_h, neighbor_l, neighbor_h):
     ptr = ptr.cpu().numpy()
@@ -204,6 +214,7 @@ best_configs = {
     "arxiv": None,
 }
 
+
 def test_partition_by_degree():
     overall_ans = {}
     # x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset="papers100M",
@@ -211,9 +222,15 @@ def test_partition_by_degree():
     # x, ptr, idx, b = cxgc.prepare_data()
     dset = "products"
     x, ptr, idx, b = cxgc.prepare_data_full_graph(dset)
-    output = cxgc.tune_spmm(x, ptr, idx)
+    output = cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], x.shape[1],
+                            cxgnncomp_backend.run_spmm_configurable,
+                            [ptr, idx, x, ptr.shape[0] - 1])
     best_configs[dset] = output[1]
-    output = cxgc.tune_spmm(x, ptr, idx, best_configs[dset])
+    output = cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], x.shape[1],
+                            cxgnncomp_backend.run_spmm_configurable,
+                            [ptr, idx, x, ptr.shape[0] - 1],
+                            best_configs[dset])
+    # output = cxgc.tune_spmm(x, ptr, idx, best_configs[dset])
     print("tuned spmm in", output[0], output[0] / idx.shape[0])
     overall_ans["tune spmm before"] = output[0]
     # x, ptr, idx, b = prepare_data_full_graph()
@@ -359,11 +376,13 @@ def test_partition_by_degree():
     print(new_ptr1.shape, new_idx1.shape, new_ptr2.shape, new_idx2.shape)
     for k, v in overall_ans.items():
         print(k, v)
-        
+
+
 def spmm_by_op(x, ptr, idx):
     expanded = torch.index_select(x, 0, idx)
     output_op = segment_csr(expanded, ptr, reduce="sum")
     return output_op
+
 
 def test_partition_by_neighbor():
     # x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset="papers100M",
@@ -372,49 +391,60 @@ def test_partition_by_neighbor():
     dset = "products"
     x, ptr, idx, b = cxgc.prepare_data_full_graph(dset)
     print("full graph", ptr.shape, idx.shape)
-    new_ptrs, new_idxs, new_targets = preprocess_neighbor_partition(ptr, idx, b["num_node_in_layer"][-1].item())
+    new_ptrs, new_idxs, new_targets = preprocess_neighbor_partition(
+        ptr, idx, b["num_node_in_layer"][-1].item())
     time_total = 0
     for i in range(len(new_ptrs)):
-        print(f"subgraph {i}", new_ptrs[i].shape, new_idxs[i].shape, new_targets[i].shape, new_ptrs[i][-1])
+        print(f"subgraph {i}", new_ptrs[i].shape, new_idxs[i].shape,
+              new_targets[i].shape, new_ptrs[i][-1])
         # if i == 0:
         if 1:
             output = cxgc.tune_spmm(x, new_ptrs[i], new_idxs[i])
         else:
-            output = cxgc.prof(f"spmm {i}", "op", lambda: spmm_by_op(x, new_ptrs[i], new_idxs[i]))
+            output = cxgc.prof(f"spmm {i}", "op",
+                               lambda: spmm_by_op(x, new_ptrs[i], new_idxs[i]))
         print(output, output[0] / new_idxs[i].shape[0])
         time_total += output[0]
     print("total time", time_total)
 
-
     output = cxgc.tune_spmm(x, ptr, idx)
     print(output)
 
+
 def test_single_submat():
-    dset = "products"
+    dset = "arxiv"
     x, ptr, idx, b = cxgc.prepare_data_full_graph(dset)
     print("full graph", ptr.shape, idx.shape)
     num_node = b["num_node_in_layer"][-1].item()
     num_center = ptr.shape[0] - 1
     num_parts = 8
     # sparse large
-    new_ptr, new_idx = get_sub_mat(ptr, idx, num_center // num_parts, num_center, num_node //num_parts, num_node )
+    new_ptr, new_idx = get_sub_mat(ptr, idx, num_center // num_parts,
+                                   num_center, num_node // num_parts, num_node)
+    print(new_ptr.shape, new_idx.shape, new_ptr[-1])
+    # output = cxgc.tune_spmm(x, new_ptr, new_idx)
+
+    output = cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], x.shape[1],
+                            cxgnncomp_backend.run_spmm_configurable,
+                            [ptr, idx, x, ptr.shape[0] - 1])
+    print(output)
+    new_ptr, new_idx = get_sub_mat(ptr, idx, 0, num_center // num_parts, 0,
+                                   num_node // num_parts)
     print(new_ptr.shape, new_idx.shape, new_ptr[-1])
     output = cxgc.tune_spmm(x, new_ptr, new_idx)
 
-    new_ptr, new_idx = get_sub_mat(ptr, idx, 0, num_center // num_parts, 0, num_node //num_parts)
+    new_ptr, new_idx = get_sub_mat(ptr, idx, 0, num_center // num_parts,
+                                   num_node // num_parts, num_node)
     print(new_ptr.shape, new_idx.shape, new_ptr[-1])
     output = cxgc.tune_spmm(x, new_ptr, new_idx)
 
-    new_ptr, new_idx = get_sub_mat(ptr, idx, 0, num_center // num_parts, num_node //num_parts, num_node)
+    new_ptr, new_idx = get_sub_mat(ptr, idx, num_center // num_parts,
+                                   num_center, 0, num_node // num_parts)
     print(new_ptr.shape, new_idx.shape, new_ptr[-1])
     output = cxgc.tune_spmm(x, new_ptr, new_idx)
 
-    new_ptr, new_idx = get_sub_mat(ptr, idx, num_center // num_parts, num_center, 0, num_node //num_parts)
-    print(new_ptr.shape, new_idx.shape, new_ptr[-1])
-    output = cxgc.tune_spmm(x, new_ptr, new_idx)
 
 if __name__ == "__main__":
     # test_partition_by_degree()
     # test_partition_by_neighbor()
     test_single_submat()
-

@@ -40,14 +40,20 @@ def validate(cpw, rpb, cpb, block_size, feat_len):
 #     (307328, 1, 128, 1, 2, 256, 128, 0, 0),
 #     (614656, 2, 32, 1, 1, 128, 128, 1, 0)
 # ]
-def tune_spmm(x, ptr, idx, param=None, patience=50):
-    if param is not None:
-        res = cxgnncomp.prof(
-            "spmm", "config", lambda: cxgnncomp_backend.run_spmm_configurable(
-                ptr, idx, x, ptr.shape[0] - 1, *param))
-        return [res[1], param]
-    num_node = ptr.shape[0] - 1
-    feat_len = x.shape[1]
+def tune_spmm(num_node,
+              num_edge,
+              feat_len,
+              func,
+              run_param,
+              performance_param=None,
+              patience=50):
+    if performance_param is not None:
+        res = cxgnncomp.prof("spmm", "config",
+                             lambda: func(*run_param, *performance_param))
+        return [
+            res[1], performance_param,
+            func(*run_param, *performance_param)
+        ]
     cpws = [32, 64, 128, 256, 512, 1024]
     # rpbs = [2, 4, 8, 16, 32]
     rpbs = [1, 2, 4, 8, 16, 32]
@@ -102,11 +108,10 @@ def tune_spmm(x, ptr, idx, param=None, patience=50):
     for param in params:
         res = cxgnncomp.prof("spmm",
                              "config",
-                             lambda: cxgnncomp_backend.run_spmm_configurable(
-                                 ptr, idx, x, ptr.shape[0] - 1, *param),
+                             lambda: func(*run_param, *param),
                              display=False)
 
-        if res[1] < mmin:
+        if res[1] < mmin and param[6] == 128:
             mmin = res[1]
             best_config = param
             no_impv = 0
@@ -118,7 +123,9 @@ def tune_spmm(x, ptr, idx, param=None, patience=50):
             print("res", res[1], mmin, param, best_config)
             print(f"progress: {cnt}/{len(params)} {time.time() - t0}")
         cnt += 1
-    print("Tuning finish with patience", patience, "tune time", time.time() - t0, f"trial-num {cnt}",  "best", mmin, mmin / idx.shape[0], best_config)
+    print("Tuning finish with patience", patience, "tune time",
+          time.time() - t0, f"trial-num {cnt}", "best", mmin, mmin / num_edge,
+          best_config)
     return [mmin, best_config]
 
 

@@ -107,6 +107,7 @@ class RGCNOP(torch.autograd.Function):
             grad_weights.append(torch.mm(x_t, grad_selective))
         return grad_x, torch.stack(grad_weights), None, None, None, None
 
+
 def RGCNOP_sorted(x, weights, src, dst, num_feat_per_rel, num_center):
     num_rel = weights.shape[0]
     output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
@@ -203,6 +204,7 @@ class MyRGCNConv(torch.nn.Module):
         return out
 
 
+# this implementation is memory inefficient, it expands the weight parameters from [R, M, N] into [E, M, N] to perform BMM
 class MyRGCNConvNaive(torch.nn.Module):
 
     def __init__(self, in_channels, hidden_channels, num_rel):
@@ -431,18 +433,6 @@ class MyGATConv(torch.nn.Module):
             return self.forward_many(x, ptr, idx, num_dst, num_src, num_edge)
 
 
-def gcn_norm(ptr: torch.Tensor, idx: torch.Tensor):
-    deg = ptr[1:] - ptr[:-1]  # in degree
-    # deg_from = idx.bincount()
-    # deg_from = deg_from.index_select(0, idx)
-    deg_to = deg.repeat_interleave(deg)
-    # assert(deg_to.shape == deg_from.shape)
-    # edge_value = (deg_to * deg_from).pow(-1/2)
-    edge_value = (deg_to.float()).pow(-1)
-    edge_value.masked_fill_(edge_value == float('inf'), 0.)
-    return edge_value
-
-
 class MyGCNConv(torch.nn.Module):
 
     def __init__(self,
@@ -470,10 +460,21 @@ class MyGCNConv(torch.nn.Module):
         if self.bias is not None:
             self.bias.data.fill_(0)
 
+    def gcn_norm(self, ptr: torch.Tensor, idx: torch.Tensor):
+        deg = ptr[1:] - ptr[:-1]  # in degree
+        # deg_from = idx.bincount()
+        # deg_from = deg_from.index_select(0, idx)
+        deg_to = deg.repeat_interleave(deg)
+        # assert(deg_to.shape == deg_from.shape)
+        # edge_value = (deg_to * deg_from).pow(-1/2)
+        edge_value = (deg_to.float()).pow(-1)
+        edge_value.masked_fill_(edge_value == float('inf'), 0.)
+        return edge_value
+
     def forward(self, x, ptr, idx, num_node):
         out = self.lin(x)  # order of lin and aggregation is consistent to PyG
         if self.normalize:
-            edge_value = gcn_norm(ptr, idx)
+            edge_value = self.gcn_norm(ptr, idx)
             out = sage_sum_forward_edge_value(out, ptr, idx, edge_value,
                                               num_node)
         else:

@@ -9,6 +9,8 @@
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
+#define ceil_div(a, b) (((a) + (b)-1) / (b))
+#define ceil(a, b) (((a) + (b)-1) / (b) * (b))
 
 using Index = int64_t;
 #define ASSERTWITH(condition, args...) \
