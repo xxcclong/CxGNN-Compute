@@ -6,6 +6,7 @@ from cxgnncomp_backend import edge_attention, sage_sum_forward_edge_value, gathe
 from .util import log
 import torch.nn.functional as F
 from torch_scatter import segment_csr, gather_csr
+from .timer import TimerOP
 
 torch.fx.wrap("edge_attention")
 torch.fx.wrap("sage_sum_forward_edge_value")
@@ -17,12 +18,13 @@ torch.fx.wrap("sage_mean_forward")
 
 class MySageConv(torch.nn.Module):
 
-    def __init__(self,
-                 in_channels,
-                 hidden_channels,
-                 root_weight: bool = True,
-                 bias: bool = True,
-                 mean_forward: bool = True):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        root_weight: bool = True,
+        bias: bool = True,
+    ):
         super(MySageConv, self).__init__()
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
@@ -32,7 +34,6 @@ class MySageConv(torch.nn.Module):
             self.lin_r = torch.nn.Linear(in_channels,
                                          hidden_channels,
                                          bias=False)
-        self.mean_forward = mean_forward
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -41,10 +42,7 @@ class MySageConv(torch.nn.Module):
             self.lin_r.reset_parameters()
 
     def forward(self, x, ptr, idx, num_node):
-        if self.mean_forward:
-            out = sage_mean_forward(x, ptr, idx, num_node)
-        else:
-            out = x[:num_node]
+        out = sage_mean_forward(x, ptr, idx, num_node)
         out = self.lin_l(out)
         if self.root_weight:
             if (num_node != 0):
@@ -310,7 +308,7 @@ class MyGATConv(torch.nn.Module):
                  in_channels: int,
                  out_channels: int,
                  heads: int = 1,
-                 concat: bool = True,
+                 concat: bool = False,
                  negative_slope: float = 0.2,
                  dropout: float = 0.0,
                  bias: bool = True):
@@ -380,16 +378,24 @@ class MyGATConv(torch.nn.Module):
         H, C = self.heads, self.out_channels
         assert x.dim() == 2
         # x_src = x_dst = torch.mm(x[:num_src], self.lin_src).view(-1, H, C)
+        x = TimerOP.apply(x, "linear1", True)
         x_src = x_dst = F.linear(x[:num_src], self.lin_src).view(-1, H, C)
+        x_src = TimerOP.apply(x_src, "linear1", False)
+        x_src = TimerOP.apply(x_src, "sum1", True)
         alpha_src = (x_src * self.att_src).sum(dim=-1).view(-1, H)
         alpha_dst = (x_dst[:num_dst] * self.att_dst).sum(dim=-1).view(-1, H)
+        alpha_dst = TimerOP.apply(alpha_dst, "sum1", False)
+        alpha_dst = TimerOP.apply(alpha_dst, "softmax1", True)
         edge_value = self.edge_softmax(ptr=ptr,
                                        idx=idx,
                                        att_src=alpha_src,
                                        att_dst=alpha_dst,
                                        num_edge=num_edge,
                                        relu_l=self.negative_slope)
+        edge_value = TimerOP.apply(edge_value, "softmax1", False)
+        edge_value = TimerOP.apply(edge_value, "aggregation", True)
         out = sage_sum_forward_edge_value(x_src, ptr, idx, edge_value, num_dst)
+        out = TimerOP.apply(out, "aggregation", False)
         if self.concat:
             out = out.view(-1, H * C)
         else:
@@ -399,6 +405,7 @@ class MyGATConv(torch.nn.Module):
         return out
 
     def forward_1(self, x, ptr, idx, num_dst, num_src, num_edge):
+        x = TimerOP.apply(x, "einsum1", True)
         alpha_src = torch.einsum(
             "mn,nho,ho->mh", x,
             self.lin_src.T.view(-1, self.heads, self.out_channels),
@@ -407,26 +414,40 @@ class MyGATConv(torch.nn.Module):
             "mn,nho,ho->mh", x[:num_dst],
             self.lin_src.T.view(-1, self.heads, self.out_channels),
             self.att_dst.squeeze(0)).view(-1, self.heads)
+        alpha_dst = TimerOP.apply(alpha_dst, "einsum1", False)
+        alpha_dst = TimerOP.apply(alpha_dst, "softmax1", True)
         edge_value = self.edge_softmax(ptr=ptr,
                                        idx=idx,
                                        att_src=alpha_src,
                                        att_dst=alpha_dst,
                                        num_edge=num_edge,
                                        relu_l=self.negative_slope)
+        edge_value = TimerOP.apply(edge_value, "softmax1", False)
         if self.out_channels < self.in_channels:
+            x = TimerOP.apply(x, "mm1", True)
             transformed = torch.mm(x, self.lin_src.T).view(
                 -1, self.heads, self.out_channels)
+            transformed = TimerOP.apply(transformed, "mm1", False)
+            transformed = TimerOP.apply(transformed, "aggregation", True)
             x = sage_sum_forward_edge_value(transformed, ptr, idx, edge_value,
                                             num_dst).squeeze()
+            x = TimerOP.apply(x, "aggregation", False)
         else:
+            x = TimerOP.apply(x, "aggregation", True)
             x = sage_sum_forward_edge_value(x, ptr, idx, edge_value.squeeze(),
                                             num_dst)
+            x = TimerOP.apply(x, "aggregation", False)
+            x = TimerOP.apply(x, "mm1", True)
             x = torch.mm(x, self.lin_src.T)
+            x = TimerOP.apply(x, "mm1", False)
         if self.bias is not None:
-            x += self.bias
-        return x
+            # x += self.bias
+            return x + self.bias
+        else:
+            return x
 
     def forward(self, x, ptr, idx, num_dst, num_src, num_edge):
+        # print(x.shape, ptr.shape, idx.shape, num_dst, num_src, num_edge)
         if self.heads == 1:
             return self.forward_1(x, ptr, idx, num_dst, num_src, num_edge)
         else:
@@ -472,14 +493,22 @@ class MyGCNConv(torch.nn.Module):
         return edge_value
 
     def forward(self, x, ptr, idx, num_node):
+        x = TimerOP.apply(x, "linear", True)
         out = self.lin(x)  # order of lin and aggregation is consistent to PyG
+        out = TimerOP.apply(out, "linear", False)
         if self.normalize:
+            out = TimerOP.apply(out, "aggregation", True)
+            TimerOP.apply(out, "gcn norm", True)
             edge_value = self.gcn_norm(ptr, idx)
+            TimerOP.apply(edge_value, "gcn norm", False)
+            print(out.shape, ptr.shape, idx.shape, edge_value.shape, num_node)
             out = sage_sum_forward_edge_value(out, ptr, idx, edge_value,
                                               num_node)
+            out = TimerOP.apply(out, "aggregation", False)
         else:
             out = sage_sum_forward(x, ptr, idx, num_node)
 
         if self.bias is not None:
-            out += self.bias
-        return out
+            return out + self.bias
+        else:
+            return out

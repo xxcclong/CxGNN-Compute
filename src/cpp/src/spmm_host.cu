@@ -43,8 +43,8 @@ torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
     //     output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
     //     block_map);
   } else if (cpw == 256) {
-    run_spmm_sharedmem_8<<<dim3(grid_x, grid_y, 1),
-                           dim3(block_x, block_y, 1)>>>(
+    run_spmm_sharedmem_8<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1),
+                           block_x * block_y * sizeof(int)>>>(
         ptr.data<Index>(), idx.data<Index>(), vin.data<float>(),
         output.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
         block_map);

@@ -5,6 +5,7 @@ from .codegen import *
 from .train_func import *
 from .trainer import *
 from .data_preparation import *
+from .timer import *
 
 # __all__ = ["SAGE", "GCN", "GAT", "MLP", "GIN", "RGCN_CSR_Layer", "MyGATConv", "MyGCNConv",
 # "MyRGCNConvNaive", "MyRGCNConvOpt1", "MyRGCNConvOpt2", "MySageConv", "MyGINConv"]

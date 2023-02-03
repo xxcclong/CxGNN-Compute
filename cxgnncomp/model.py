@@ -142,9 +142,7 @@ class RGCN(GNN):
             self.num_rel = 5
             log.info("Generate relation type for RMAG240M at 5")
         if "CSR" in self.graph_type:
-            return MyRGCNConv(in_channels,
-                              out_channels,
-                              num_rel=self.num_rel)
+            return MyRGCNConv(in_channels, out_channels, num_rel=self.num_rel)
         elif "DGL" in self.graph_type:
             return dglnn.RelGraphConv(in_channels,
                                       out_channels,
@@ -204,7 +202,7 @@ class GAT(GNN):
     def init_conv(self, in_channels, out_channels, **kwargs):
         if 'heads' in kwargs and out_channels % kwargs['heads'] != 0:
             kwargs['heads'] = 1
-        if 'concat' not in kwargs or kwargs['concat']:
+        if 'concat' in kwargs and kwargs['concat']:
             out_channels = out_channels // kwargs.get('heads', 1)
         if "CSR" in self.graph_type:
             return MyGATConv(in_channels, out_channels, **kwargs)
@@ -349,7 +347,7 @@ def get_model(config):
     graph_type = graph_type_dict[config.train.type.lower()]
     if "gat" in config.train.model.type.lower():
         heads = config.train.model.get('heads', 1)
-        concat = config.train.model.get('concat', True)
+        concat = config.train.model.get('concat', False)
         model = model_dict[config.train.model.type.lower()](in_channel,
                                                             hidden_channel,
                                                             out_channel,

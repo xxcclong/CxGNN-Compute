@@ -1,5 +1,6 @@
 import torch, cxgnndl, cxgnndl_backend
 
+
 def prepare_data():
     torch.manual_seed(0)
     # dataset_name = "paper100m"
@@ -16,14 +17,19 @@ def prepare_data():
     return x, ptr, idx, batch
 
 
-def prepare_data_full_graph(dset):
+def prepare_data_full_graph(dset, feat_len=128, num_head=1):
     ptr, idx = cxgnndl.load_full_graph_structure(dset)
     ptr = torch.from_numpy(ptr).cuda()
     idx = torch.from_numpy(idx).cuda()
-    feat_len = 128
-    x = torch.randn([ptr.shape[0] - 1, feat_len],
-                    dtype=torch.float32,
-                    device='cuda')
+    if num_head == 1:
+        x = torch.randn([ptr.shape[0] - 1, feat_len],
+                        dtype=torch.float32,
+                        device='cuda')
+    else:
+        x = torch.randn([ptr.shape[0] - 1, num_head, feat_len],
+                        dtype=torch.float32,
+                        device='cuda')
+
     # edge_index = torch.stack([
     #     idx,
     #     torch.repeat_interleave(torch.arange(
@@ -32,12 +38,16 @@ def prepare_data_full_graph(dset):
     # ],
     #                          dim=0)
     batch = {}
-    batch["num_node_in_layer"] = torch.tensor(
-        [ptr.shape[0] - 1, ptr.shape[0] - 1])
+    batch["num_node_in_layer"] = torch.tensor([ptr.shape[0] - 1] * 4)
+    batch["num_edge_in_layer"] = torch.tensor([idx.shape[0]] * 4)
     return x, ptr, idx, batch
 
 
-def prepare_data_sampled_graph(dset, num_seeds, fanouts=[10, 15, 20]):
+def prepare_data_sampled_graph(dset,
+                               num_seeds,
+                               feat_len=128,
+                               num_head=1,
+                               fanouts=[10, 15, 20]):
     full_ptr, full_idx = cxgnndl.load_full_graph_structure(dset)
     full_ptr = torch.from_numpy(full_ptr)
     full_idx = torch.from_numpy(full_idx)
@@ -47,12 +57,17 @@ def prepare_data_sampled_graph(dset, num_seeds, fanouts=[10, 15, 20]):
         full_ptr, full_idx, fanouts, seed_nodes)
     ptr = ptr.cuda()
     idx = idx.cuda()
-    feat_len = 128
-    x = torch.randn([input_nodes.shape[0], feat_len],
-                    dtype=torch.float32,
-                    device='cuda')
+    if num_head == 1:
+        x = torch.randn([input_nodes.shape[0], feat_len],
+                        dtype=torch.float32,
+                        device='cuda')
+    else:
+        x = torch.randn([input_nodes.shape[0], num_head, feat_len],
+                        dtype=torch.float32,
+                        device='cuda')
     batch = {}
     batch["num_node_in_layer"] = num_node_in_layer
+    batch["num_edge_in_layer"] = num_edge_in_layer
     batch["sub_to_full"] = input_nodes.cuda()
     print(ptr.shape, idx.shape, x.shape, batch["num_node_in_layer"])
     return x, ptr, idx, batch
