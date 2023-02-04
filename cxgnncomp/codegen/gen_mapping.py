@@ -111,7 +111,7 @@ def tune_spmm(num_node,
                              lambda: func(*run_param, *param),
                              display=False)
 
-        if res[1] < mmin and param[6] == 128:
+        if res[1] < mmin:
             mmin = res[1]
             best_config = param
             no_impv = 0

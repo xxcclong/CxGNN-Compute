@@ -26,6 +26,11 @@ torch::Tensor spmm_multihead(torch::Tensor ptr, torch::Tensor idx,
                              Index num_node, SPMM_MULTIHEAD_SCHEDULE schedule,
                              int block_size);
 
+void spmm_multihead_bwd(torch::Tensor ptr, torch::Tensor idx, torch::Tensor val,
+                        torch::Tensor grad_output, torch::Tensor grad_x,
+                        Index num_node, SPMM_MULTIHEAD_SCHEDULE schedule,
+                        int block_size);
+
 torch::Tensor run_spmm_multihead_configurable(
     torch::Tensor ptr, torch::Tensor idx, torch::Tensor val, torch::Tensor vin,
     Index num_node, int grid_x, int grid_y, int block_x, int block_y, int rpb,

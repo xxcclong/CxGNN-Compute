@@ -7,6 +7,7 @@ from .util import log
 import torch.nn.functional as F
 from torch_scatter import segment_csr, gather_csr
 from .timer import TimerOP
+from .graph_kernel import SpMMValOP
 
 torch.fx.wrap("edge_attention")
 torch.fx.wrap("sage_sum_forward_edge_value")
@@ -394,15 +395,18 @@ class MyGATConv(torch.nn.Module):
                                        relu_l=self.negative_slope)
         edge_value = TimerOP.apply(edge_value, "softmax1", False)
         edge_value = TimerOP.apply(edge_value, "aggregation", True)
-        out = sage_sum_forward_edge_value(x_src, ptr, idx, edge_value, num_dst)
+        # out = sage_sum_forward_edge_value(x_src, ptr, idx, edge_value, num_dst)
+        out = SpMMValOP.apply(x_src, ptr, idx, edge_value, num_dst)
         out = TimerOP.apply(out, "aggregation", False)
         if self.concat:
             out = out.view(-1, H * C)
-        else:
+        elif out.shape[1] == self.heads:
             out = out.mean(dim=1)  # NOTE: requires out to be [-1, H, C]
+        # else: already sumed/averaged
         if self.bias is not None:
-            out += self.bias
-        return out
+            return out + self.bias
+        else:
+            return out
 
     def forward_1(self, x, ptr, idx, num_dst, num_src, num_edge):
         x = TimerOP.apply(x, "einsum1", True)

@@ -153,6 +153,24 @@ torch::Tensor spmm_multihead(torch::Tensor ptr, torch::Tensor idx,
   }
 }
 
+void spmm_multihead_bwd(torch::Tensor ptr, torch::Tensor idx, torch::Tensor val,
+                        torch::Tensor grad_output, torch::Tensor grad_x,
+                        Index num_node, SPMM_MULTIHEAD_SCHEDULE schedule,
+                        int block_size) {
+  dim3 grid, block;
+  int feat_len = grad_output.sizes().back();
+  int num_head = grad_x.sizes()[1];
+  int ceil_feat_len = ceil(feat_len, 32);
+  if (block_size < ceil_feat_len) block_size = ceil_feat_len;
+  block.y = ceil_feat_len / 32;
+  block.x = ceil_div(block_size, ceil_feat_len) * 32;
+  grid.x = ceil_div(num_node, block_size / ceil_feat_len);
+  gen_bwd_sum_edge_value_multi_head<<<grid, block>>>(
+      ptr.data<Index>(), idx.data<Index>(), val.data<float>(),
+      grad_output.data<float>(), nullptr, grad_x.data<float>(), num_node,
+      feat_len, num_head);
+}
+
 torch::Tensor run_spmm_multihead_configurable(
     torch::Tensor ptr, torch::Tensor idx, torch::Tensor val, torch::Tensor vin,
     Index num_node, int grid_x, int grid_y, int block_x, int block_y, int rpb,

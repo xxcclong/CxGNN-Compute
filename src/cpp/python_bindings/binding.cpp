@@ -5,6 +5,7 @@
 #include "edge_softmax.h"
 #include "rel_spmm.h"
 #include "schedule.h"
+#include "sddmm_host.h"
 #include "spmm_host.h"
 namespace py = pybind11;
 using namespace pybind11::literals;
@@ -50,9 +51,16 @@ void init_spmm_multihead(py::module &m) {
         py::arg("val"), py::arg("vin"), py::arg("num_node"),
         py::arg("schedule") = SPMM_MULTIHEAD_SCHEDULE::Optimal,
         py::arg("block_size") = 256);
+  m.def("spmm_multihead_bwd", &spmm_multihead_bwd, py::arg("ptr"),
+        py::arg("idx"), py::arg("val"), py::arg("grad_output"),
+        py::arg("grad_x"), py::arg("num_node"),
+        py::arg("schedule") = SPMM_MULTIHEAD_SCHEDULE::Optimal,
+        py::arg("block_size") = 256);
   m.def("run_spmm_multihead_configurable", &run_spmm_multihead_configurable,
         "");
 }
+
+void init_sddmm(py::module &m) { m.def("run_sddmm", &run_sddmm, ""); }
 
 void assertTensor(torch::Tensor &T, torch::ScalarType type) {
   assert(T.is_contiguous());
@@ -102,4 +110,5 @@ PYBIND11_MODULE(cxgnncomp_backend, m) {
   init_spmm_multihead(m);
   init_compute(m);
   init_dgsparse(m);
+  init_sddmm(m);
 }

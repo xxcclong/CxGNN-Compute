@@ -17,7 +17,7 @@ def train(model, params, label, optimizer, lossfn):
 def test_conv_training():
     infeat = 256
     outfeat = 256
-    num_head = 1
+    num_head = 4
     dev = torch.device("cuda:0")
 
     dset = "arxiv"
