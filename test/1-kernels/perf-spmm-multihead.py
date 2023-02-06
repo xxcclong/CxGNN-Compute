@@ -1,6 +1,7 @@
 import cxgnncomp as cxgc
 import cxgnncomp_backend
 import torch
+import numpy
 
 
 def prepare_data():
@@ -84,11 +85,65 @@ def test_spmm_multihead_neighbor_grouping():
     val = torch.randn([idx.shape[0], num_head],
                       dtype=torch.float32,
                       device=x.device)
-    x = torch.randn([x.shape[0], num_head, x.shape[-1]],
-                    dtype=torch.float32,
-                    device=x.device)
+    # neighbor grouping
+    neighbor_thres = 32
+
+    def neighbor_grouping(ptr, neighbor_thres):
+        ptr = ptr.cpu().numpy()
+        new_ptr = [0]
+        new_target = []
+        for i in range(len(ptr) - 1):
+            end = ptr[i + 1]
+            start = ptr[i]
+            while end - start > neighbor_thres:
+                start += neighbor_thres
+                new_ptr.append(start)
+                new_target.append(i)
+            new_ptr.append(end)
+            new_target.append(i)
+        return torch.from_numpy(numpy.array(new_ptr)).cuda(), torch.from_numpy(
+            numpy.array(new_target)).cuda()
+
+    new_ptr, new_target = neighbor_grouping(ptr, neighbor_thres)
+    cxgc.prof(
+        "spmm-multihead", "warm-up", lambda: cxgc.sage_sum_forward_edge_value(
+            x, ptr, idx, val, ptr.shape[0] - 1))
+    cxgc.prof(
+        "spmm-multihead", "old", lambda: cxgc.sage_sum_forward_edge_value(
+            x, ptr, idx, val, ptr.shape[0] - 1))
+    cxgc.prof(
+        "spmm-multihead",
+        "old-neighbor-grouping", lambda: cxgc.sage_sum_forward_edge_value(
+            x, new_ptr, idx, val, new_ptr.shape[0] - 1))
+    cxgc.prof(
+        "spmm-multihead", "pre-reduce",
+        lambda: cxgnncomp_backend.spmm_multihead(
+            ptr, idx, val, x, ptr.shape[0] - 1, cxgnncomp_backend.
+            SPMM_MULTIHEAD_SCHEDULE.Optimal, 256))
+    cxgc.prof(
+        "spmm-multihead", "pre-reduce-neighbor-grouping",
+        lambda: cxgnncomp_backend.spmm_multihead(
+            new_ptr, idx, val, x, new_ptr.shape[0] - 1, cxgnncomp_backend.
+            SPMM_MULTIHEAD_SCHEDULE.Optimal, 256))
+
+    output = cxgc.tune_spmm(
+        ptr.shape[0] - 1,
+        idx.shape[0],
+        x.shape[-1],
+        cxgnncomp_backend.run_spmm_multihead_configurable,
+        [ptr, idx, val, x, ptr.shape[0] - 1],
+    )
+
+    output = cxgc.tune_spmm(
+        new_ptr.shape[0] - 1,
+        idx.shape[0],
+        x.shape[-1],
+        cxgnncomp_backend.run_spmm_multihead_configurable,
+        [new_ptr, idx, val, x, new_ptr.shape[0] - 1],
+    )
 
 
 if __name__ == "__main__":
     test_spmm_multihead()
-    tune_spmm_multihead()
+    # tune_spmm_multihead()
+    # test_spmm_multihead_neighbor_grouping()

@@ -56,9 +56,9 @@ def test_conv_training():
             lambda: train(conv, [feat, ptr, idx, b["num_node_in_layer"][-2]],
                           feat_label, optimizer, lossfn))
     torch.cuda.synchronize()
-    output = cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], feat.shape[-1],
-                            cxgnncomp_backend.run_spmm_configurable,
-                            [ptr, idx, feat, ptr.shape[0] - 1])
+    # output = cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], feat.shape[-1],
+    #                         cxgnncomp_backend.run_spmm_configurable,
+    #                         [ptr, idx, feat, ptr.shape[0] - 1])
 
 
 class Batch():

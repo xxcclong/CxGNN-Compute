@@ -31,3 +31,6 @@ Tensor aggr_rel_direct(Tensor input, Tensor ptr, Tensor idx, Tensor weights,
 torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
                                     torch::Tensor idx, torch::Tensor weights,
                                     torch::Tensor rel, Index num_node);
+
+void run_typed_linear(Tensor vin, Tensor weights, Tensor output, Tensor types,
+                      int in_feat_tile);

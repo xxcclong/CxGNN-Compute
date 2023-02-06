@@ -34,7 +34,6 @@ __global__ void aggr_rel_fwd(Index *ptr, Index *idx, int *rel, float *vin,
   if (col < INFEATURE) vout[row * INFEATURE + col] = rs;
 }
 
-
 torch::Tensor AggrRelFunction::forward(AutogradContext *ctx,
                                        torch::Tensor input, torch::Tensor ptr,
                                        torch::Tensor idx, torch::Tensor rel,
@@ -182,11 +181,11 @@ __global__ void aggr_rgcn_direct_kernel(Index *ptr, Index *idx, float *vin,
 }
 
 __global__ void aggr_rgcn_direct_bwd_kernel(Index *ptr, Index *idx,
-                                        float *vout_grad, Index num_v, int INFEATURE,
-                                        int OUTFEATURE, int num_rel,
-                                        float *weight, 
-                                        float *output_vin_grad,
-                                        int *etype) {
+                                            float *vout_grad, Index num_v,
+                                            int INFEATURE, int OUTFEATURE,
+                                            int num_rel, float *weight,
+                                            float *output_vin_grad,
+                                            int *etype) {
   int block_size = blockDim.x * blockDim.y;
   int row = blockIdx.x * blockDim.y + threadIdx.y;
   if (row >= num_v) return;
@@ -221,12 +220,53 @@ __global__ void aggr_rgcn_direct_bwd_kernel(Index *ptr, Index *idx,
                     weight[theweight + (t * 32 + k) + thisinfea * OUTFEATURE];
           }
         }
-        if (thisinfea < INFEATURE) atomicAdd(&output_vin_grad[shared_idx[j] * INFEATURE + thisinfea], rs);
+        if (thisinfea < INFEATURE)
+          atomicAdd(&output_vin_grad[shared_idx[j] * INFEATURE + thisinfea],
+                    rs);
       }
     }
   }
 }
 
+__global__ void typed_linear_kernel(float *vin, float *weights, float *vout,
+                                    Index num, int INFEATURE, int OUTFEATURE,
+                                    int in_feat_tile, int *types) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int warp_id = tid / 32;
+  int lane_id = tid % 32;
+  if (warp_id >= num) return;
+  extern __shared__ float sh[];
+  int sh_mem_offset = in_feat_tile * (threadIdx.x / 32);
+  float *sh_vin = sh + sh_mem_offset;
+  float *curr_weight = weights + INFEATURE * OUTFEATURE * types[warp_id];
+  for (int i = 0; i < INFEATURE / in_feat_tile; ++i) {
+    // load vin into shared memory
+    for (int j = lane_id; j < in_feat_tile; j += 32) {
+      sh_vin[j] = vin[warp_id * INFEATURE + i * in_feat_tile + j];
+    }
+    for (int j = lane_id; j < OUTFEATURE; j += 32) {
+      float res = 0.f;
+      for (int k = 0; k < in_feat_tile; ++k) {
+        res += sh_vin[k] * curr_weight[(i * in_feat_tile + k) * OUTFEATURE + j];
+      }
+      vout[warp_id * OUTFEATURE + j] += res;
+    }
+  }
+}
+
+void run_typed_linear(Tensor vin, Tensor weights, Tensor output, Tensor types,
+                      int in_feat_tile) {
+  int num = vin.size(0);
+  int in_feat = vin.size(1);
+  int out_feat = output.size(1);
+  int block_size = 256;
+  int num_blocks = ceil(num, block_size / 32);
+  if (in_feat_tile > in_feat) in_feat_tile = in_feat;
+  typed_linear_kernel<<<num_blocks, block_size,
+                        in_feat_tile * 32 * sizeof(float)>>>(
+      vin.data<float>(), weights.data<float>(), output.data<float>(), num,
+      in_feat, out_feat, in_feat_tile, types.data<int>());
+}
 
 torch::Tensor AggrRelDirectFunction::forward(
     AutogradContext *ctx, torch::Tensor input, torch::Tensor ptr,
@@ -268,7 +308,6 @@ torch::Tensor AggrRelDirectFunction::forward(
   return output;
 }
 
-
 tensor_list AggrRelDirectFunction::backward(AutogradContext *ctx,
                                             tensor_list grad_outputs) {
   auto saved = ctx->get_saved_variables();
@@ -295,14 +334,13 @@ tensor_list AggrRelDirectFunction::backward(AutogradContext *ctx,
   // aggr_rgcn_direct_bwd_kernel<<< grid, block, shared_size >>>(ptr, idx,
   //                             grad_output.data<float>(), num_node, feat_len,
   //                             out_feat_len, num_rel,
-  //                             weights.data<float>(), 
+  //                             weights.data<float>(),
   //                             grad_input.data<float>(),
   //                             rel);
 
-  return {grad_input, torch::Tensor(), torch::Tensor(), grad_weight, 
-  torch::Tensor(),torch::Tensor(),torch::Tensor()};
+  return {grad_input,      torch::Tensor(), torch::Tensor(), grad_weight,
+          torch::Tensor(), torch::Tensor(), torch::Tensor()};
 }
-
 
 torch::Tensor aggr_rel_direct(torch::Tensor input, torch::Tensor ptr,
                               torch::Tensor idx, torch::Tensor weights,
@@ -323,6 +361,7 @@ torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
   // ASSERT(feat_len % 32 == 0);
   // ASSERT(out_feat_len % 32 == 0);
   ASSERT(input.device().index() >= 0);
+  ASSERT(weights.dim() == 3);
   auto output = input.new_zeros({num_node, out_feat_len});
   int block_size = 256;
   int tmp_target_in_block = block_size / 32;

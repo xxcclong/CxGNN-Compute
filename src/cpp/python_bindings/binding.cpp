@@ -39,6 +39,7 @@ void init_rel_spmm(py::module &m) {
   m.def("aggr_rel", &aggr_rel, "");
   m.def("aggr_rel_direct", &aggr_rel_direct, "");
   m.def("aggr_rgcn_direct_func", &aggr_rgcn_direct_func, "");
+  m.def("typed_linear", &run_typed_linear, "");
 }
 
 void init_spmm_multihead(py::module &m) {
