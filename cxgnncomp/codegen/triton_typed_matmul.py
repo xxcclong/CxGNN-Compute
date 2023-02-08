@@ -105,7 +105,8 @@ def matmul_kernel(
     a_ptr,
     b_ptr,
     c_ptr,
-    index_ptr,
+    src_index_ptr,
+    dst_index_ptr,
     rel_ptr,
     # Matrix dimensions
     M,
@@ -145,8 +146,9 @@ def matmul_kernel(
     pid_n = (pid % num_pid_in_group) // group_size_m
 
     offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_am_index = tl.load(index_ptr + offs_am, mask=offs_am < M)
-    rel = tl.load(rel_ptr + pid_m)
+    offs_am_index = tl.load(src_index_ptr + offs_am, mask=offs_am < M)
+    rel_pos = pid_m * BLOCK_SIZE_M
+    rel = tl.load(rel_ptr + rel_pos, mask=rel_pos < M)
     if rel >= 7:
         return
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
@@ -174,10 +176,12 @@ def matmul_kernel(
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     # c_ptrs = c_ptr + stride_cm * offs_cm[:,
     #                                      None] + stride_cn * offs_cn[None, :]
-    c_ptrs = c_ptr + stride_cm * offs_am_index[:, None] + stride_cn * offs_cn[
+
+    offs_cm_index = tl.load(dst_index_ptr + offs_am, mask=offs_am < M)
+    c_ptrs = c_ptr + stride_cm * offs_cm_index[:, None] + stride_cn * offs_cn[
         None, :]
-    c_mask = (offs_am_index[:, None] >= 0) & (offs_cn[None, :] <
-                                              N) & (offs_am[:, None] < M)
+    c_mask = (offs_cm_index[:, None] >= 0) & (offs_cn[None, :] < N) & (
+        offs_am[:, None] < M) & (offs_cm_index[:, None] < M)
     tl.store(c_ptrs, accumulator, mask=c_mask)
 
 
@@ -188,19 +192,15 @@ def leaky_relu(x):
     return tl.where(x >= 0, x, 0.01 * x)
 
 
-def typed_matmul(a, b, idx, rel, activation=""):
+def typed_matmul(a, b, src_idx, dst_idx, rel, activation=""):
     assert a.shape[1] == b.shape[1], "incompatible dimensions"
     assert a.is_contiguous(), "matrix A must be contiguous"
     assert b.is_contiguous(), "matrix B must be contiguous"
-    assert idx.is_contiguous(), "matrix idx must be contiguous"
+    assert src_idx.is_contiguous(), "matrix idx must be contiguous"
     assert rel.is_contiguous(), "matrix rel must be contiguous"
-    print(a.shape, b.shape, idx.shape, rel.shape)
-    print(a.device, b.device, idx.device, rel.device)
-    print(a.dtype, b.dtype, idx.dtype, rel.dtype)
-    print(torch.max(idx), torch.min(idx), torch.max(rel), torch.min(rel))
     M, K = a.shape
     R, K, N = b.shape
-    M = idx.shape[0]
+    M = src_idx.shape[0]
     assert (K % 32 == 0)
     # allocates output
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
@@ -211,7 +211,8 @@ def typed_matmul(a, b, idx, rel, activation=""):
         a,
         b,
         c,
-        idx,
+        src_idx,
+        dst_idx,
         rel,
         M,
         N,

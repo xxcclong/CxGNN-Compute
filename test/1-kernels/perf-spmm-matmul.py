@@ -1,6 +1,7 @@
 import torch
 import cxgnncomp as cxgc
 import cxgnncomp_backend
+import time
 
 
 def prepare_data():
@@ -22,13 +23,22 @@ def prepare_data():
 def test_spmm_matmul():
     x, ptr, idx, b, num_head = prepare_data()
     num_rel = 7
+    num_edge = idx.shape[0]
     rel = torch.randint(0,
                         num_rel, [idx.shape[0]],
                         dtype=torch.int32,
                         device=x.device)
-    weights = torch.randn([num_rel, x.shape[-1], x.shape[-1]],
-                          dtype=torch.float32,
-                          device=x.device)
+    single_weight = torch.randn([x.shape[-1], x.shape[-1]],
+                                dtype=torch.float32,
+                                device=x.device)
+
+    weights = torch.repeat_interleave(single_weight.unsqueeze(0),
+                                      num_rel,
+                                      dim=0).reshape(num_rel, x.shape[-1],
+                                                     x.shape[-1])
+    # weights = torch.randn([num_rel, x.shape[-1], x.shape[-1]],
+    #                       dtype=torch.float32,
+    #                       device=x.device)
     # # method 1
     # cxgc.prof(
     #     "rgcn", "direct", lambda: cxgnncomp_backend.aggr_rgcn_direct_func(
@@ -37,10 +47,12 @@ def test_spmm_matmul():
     #     "rgcn", "direct", lambda: cxgnncomp_backend.aggr_rgcn_direct_func(
     #         x, ptr, idx, weights, rel, ptr.shape[0] - 1))
 
-    # # method 2
-    # cxgc.prof(
-    #     "rgcn", "pre-transform", lambda: cxgc.RGCNOP2.apply(
-    #         x, weights, ptr, idx, rel, ptr.shape[0] - 1))
+    # method 2
+    gt_output_dst = cxgc.RGCNOP2.apply(x, weights, ptr, idx, rel,
+                                       ptr.shape[0] - 1)
+    cxgc.prof(
+        "rgcn", "pre-transform", lambda: cxgc.RGCNOP2.apply(
+            x, weights, ptr, idx, rel, ptr.shape[0] - 1))
 
     # method 3
     dst = torch.repeat_interleave(
@@ -88,6 +100,11 @@ def test_spmm_matmul():
         "rgcn", "typed_linear", lambda: cxgnncomp_backend.typed_linear(
             indexed_x, weights, output, rel.int(), 64))
 
+    gt_output_edge = torch.empty([indexed_x.shape[0], weights.shape[-1]],
+                                 device=x.device)
+    cxgnncomp_backend.typed_linear(indexed_x, weights, gt_output_edge,
+                                   rel.int(), 64)
+
     # method 5
     count = torch.bincount(rel, ).cpu()
 
@@ -103,37 +120,56 @@ def test_spmm_matmul():
     cxgc.prof("rgcn", "align-rel", lambda: aligh_rel(rel, count, 32))
 
     # method 6
-    def new_typed_linear(x, weights, idx, rel, num_edge):
+    def new_typed_linear(x, weights, old_idx, old_rel, num_edge):
         thres = 256
-        count = torch.bincount(rel, )
-        print(count)
-        rel = rel.resize_(num_edge + num_rel * (thres - 1))
-        idx = idx.resize_(num_edge + num_rel * (thres - 1))
+        count = torch.bincount(old_rel, )
+        rel = torch.empty([old_rel.shape[0] + num_rel * (thres - 1)],
+                          device=x.device,
+                          dtype=old_rel.dtype)
+        rel[:old_rel.shape[0]] = old_rel
+        idx = torch.empty([old_idx.shape[0] + num_rel * (thres - 1)],
+                          device=x.device,
+                          dtype=old_idx.dtype)
+        idx[:old_idx.shape[0]] = old_idx
+        # rel = old_rel.resize_(num_edge + num_rel * (thres - 1))
+        # idx = old_idx.resize_(num_edge + num_rel * (thres - 1))
         cxgnncomp_backend.pad_rel(rel, idx, count, thres, num_rel, num_edge)
         sorted_rel, indices = torch.sort(rel)
-        # print(torch.bincount(sorted_rel))
-        # weights = torch.randn([num_rel + 1, x.shape[-1], x.shape[-1]],
-        #                       device=x.device,
-        #                       dtype=torch.float32)
-        # x = x[idx]
-        torch.cuda.synchronize()
-        # output = cxgc.codegen.typed_matmul(x, weights, (idx + 1)[:32 * 1024],
-        #                                    sorted_rel[:32 * 1024])
-        fake_idx = torch.arange(0, indices.shape[0], device=x.device)
-        fake_idx = fake_idx % x.shape[0]
-        output = cxgc.codegen.typed_matmul(x, weights, fake_idx, sorted_rel)
-        # output = cxgc.codegen.typed_matmul(x, weights, idx[indices], sorted_rel)
-        torch.cuda.synchronize()
-        cxgc.prof(
-            "rgcn", "typed_matmul", lambda: cxgc.codegen.typed_matmul(
-                x, weights, idx[indices], sorted_rel))
+        # cxgc.prof(
+        #     "rgcn", "typed_matmul", lambda: cxgc.codegen.typed_matmul(
+        #         x, weights, idx[indices], indices, sorted_rel))
+        # print(idx[indices])
+        output = cxgc.codegen.typed_matmul(x, weights, idx[indices], indices,
+                                           sorted_rel)
+
         return output
 
     rel = rel.to(torch.int64)
-    new_typed_linear(x, weights, idx, rel, num_edge=idx.shape[0])
-    # cxgc.prof(
-    #     "rgcn", "new_typed_linear",
-    #     lambda: new_typed_linear(x, weights, idx, rel, num_edge=idx.shape[0]))
+    output_edge = new_typed_linear(x, weights, idx, rel, num_edge=idx.shape[0])
+    print(
+        torch.allclose(output_edge[:num_edge],
+                       gt_output_edge,
+                       atol=1e-3,
+                       rtol=1e-2))
+    print(output_edge[:num_edge][torch.isclose(
+        output_edge[:num_edge], gt_output_edge, atol=1e-3, rtol=1e-2) ==
+                                 False])
+    print(gt_output_edge[torch.isclose(
+        output_edge[:num_edge], gt_output_edge, atol=1e-3, rtol=1e-2) ==
+                         False])
+    print(gt_output_edge[torch.isclose(
+        output_edge[:num_edge], gt_output_edge, atol=1e-3, rtol=1e-2) ==
+                         False].shape)
+    print(gt_output_edge.shape)
+    # print(output_edge[:num_edge], gt_output_edge)
+    # print(torch.matmul(x, weights[0]))
+    # print(torch.matmul(x[idx], weights[0]))
+    # print(torch.matmul(x[0], weights[0]))
+    # print(idx)
+
+    cxgc.prof(
+        "rgcn", "new_typed_linear",
+        lambda: new_typed_linear(x, weights, idx, rel, num_edge=idx.shape[0]))
 
 
 if __name__ == "__main__":

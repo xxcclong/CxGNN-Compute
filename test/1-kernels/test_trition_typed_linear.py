@@ -48,7 +48,8 @@ print(batched_rels.shape)
 # rel_b = torch.randn((num_rel, 256, 256), device='cuda', dtype=torch.float32)
 rel_b = torch.repeat_interleave(b.unsqueeze(0), num_rel,
                                 dim=0).reshape(num_rel, 256, 256)
-triton_output = typed_matmul(a, rel_b, new_idx, batched_rels)[:num_edge]
+triton_output = typed_matmul(a, rel_b, new_idx, new_idx,
+                             batched_rels)[:num_edge]
 torch.cuda.synchronize()
 torch_output = torch.matmul(a, b)
 print(f"triton_output={triton_output}")
@@ -60,8 +61,8 @@ print(triton.testing.allclose(triton_output, torch_output))
 #     print("❌ Triton and Torch differ")
 print(
     triton.testing.do_bench(
-        lambda: typed_matmul(a, rel_b, new_idx, batched_rels)))
+        lambda: typed_matmul(a, rel_b, new_idx, new_idx, batched_rels)))
 print(
     triton.testing.do_bench(
-        lambda: typed_matmul(a, rel_b, new_idx, batched_rels)))
+        lambda: typed_matmul(a, rel_b, new_idx, new_idx, batched_rels)))
 print(triton.testing.do_bench(lambda: torch.matmul(a, b)))
