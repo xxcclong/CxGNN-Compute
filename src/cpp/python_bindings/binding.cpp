@@ -7,6 +7,7 @@
 #include "schedule.h"
 #include "sddmm_host.h"
 #include "spmm_host.h"
+#include "stitch_kernel.h"
 namespace py = pybind11;
 using namespace pybind11::literals;
 
@@ -40,6 +41,7 @@ void init_rel_spmm(py::module &m) {
   m.def("aggr_rel_direct", &aggr_rel_direct, "");
   m.def("aggr_rgcn_direct_func", &aggr_rgcn_direct_func, "");
   m.def("typed_linear", &run_typed_linear, "");
+  m.def("pad_rel", &pad_rel_gpu, "");
 }
 
 void init_spmm_multihead(py::module &m) {

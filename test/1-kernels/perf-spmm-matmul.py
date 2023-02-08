@@ -100,7 +100,40 @@ def test_spmm_matmul():
         arr = torch.Tensor(arr).cuda()
         return torch.cat([rel, arr], dim=0)
 
-    cxgc.prof("rgcn", "aligh_rel", lambda: aligh_rel(rel, count, 32))
+    cxgc.prof("rgcn", "align-rel", lambda: aligh_rel(rel, count, 32))
+
+    # method 6
+    def new_typed_linear(x, weights, idx, rel, num_edge):
+        thres = 256
+        count = torch.bincount(rel, )
+        print(count)
+        rel = rel.resize_(num_edge + num_rel * (thres - 1))
+        idx = idx.resize_(num_edge + num_rel * (thres - 1))
+        cxgnncomp_backend.pad_rel(rel, idx, count, thres, num_rel, num_edge)
+        sorted_rel, indices = torch.sort(rel)
+        # print(torch.bincount(sorted_rel))
+        # weights = torch.randn([num_rel + 1, x.shape[-1], x.shape[-1]],
+        #                       device=x.device,
+        #                       dtype=torch.float32)
+        # x = x[idx]
+        torch.cuda.synchronize()
+        # output = cxgc.codegen.typed_matmul(x, weights, (idx + 1)[:32 * 1024],
+        #                                    sorted_rel[:32 * 1024])
+        fake_idx = torch.arange(0, indices.shape[0], device=x.device)
+        fake_idx = fake_idx % x.shape[0]
+        output = cxgc.codegen.typed_matmul(x, weights, fake_idx, sorted_rel)
+        # output = cxgc.codegen.typed_matmul(x, weights, idx[indices], sorted_rel)
+        torch.cuda.synchronize()
+        cxgc.prof(
+            "rgcn", "typed_matmul", lambda: cxgc.codegen.typed_matmul(
+                x, weights, idx[indices], sorted_rel))
+        return output
+
+    rel = rel.to(torch.int64)
+    new_typed_linear(x, weights, idx, rel, num_edge=idx.shape[0])
+    # cxgc.prof(
+    #     "rgcn", "new_typed_linear",
+    #     lambda: new_typed_linear(x, weights, idx, rel, num_edge=idx.shape[0]))
 
 
 if __name__ == "__main__":
