@@ -5,7 +5,7 @@ import cxgnncomp_backend
 
 def prepare_data():
     dset = "arxiv"
-    infeat = 64
+    infeat = 256
     num_head = 1
     x, ptr, idx, b = cxgc.prepare_data_full_graph(
         dset,
@@ -61,9 +61,14 @@ def test_spmm_matmul():
     def sort_and_move(x, rel):
         sorted, indices = torch.sort(rel)
         x = x[idx[indices]]
-        count = torch.bincount(rel).cpu()
+        # count = torch.bincount(rel).cpu()
 
-    cxgc.prof("rgcn", "sort", lambda: sort_and_move(x, rel))
+    def sort_only(x, rel):
+        sorted, indices = torch.sort(rel)
+
+    cxgc.prof("rgcn", "sort and move", lambda: sort_and_move(x, rel))
+
+    cxgc.prof("rgcn", "sort only", lambda: sort_only(x, rel))
 
     # method 4
     output = torch.empty([x.shape[0], weights.shape[-1]], device=x.device)
@@ -82,6 +87,20 @@ def test_spmm_matmul():
     cxgc.prof(
         "rgcn", "typed_linear", lambda: cxgnncomp_backend.typed_linear(
             indexed_x, weights, output, rel.int(), 64))
+
+    # method 5
+    count = torch.bincount(rel, ).cpu()
+
+    def aligh_rel(rel, count, thres):
+        arr = []
+        for it, r in enumerate(count):
+            if r % thres != 0:
+                toadd = thres - r % thres
+                arr += ([it for _ in range(toadd)])
+        arr = torch.Tensor(arr).cuda()
+        return torch.cat([rel, arr], dim=0)
+
+    cxgc.prof("rgcn", "aligh_rel", lambda: aligh_rel(rel, count, 32))
 
 
 if __name__ == "__main__":

@@ -1,16 +1,3 @@
-"""
-Matrix Multiplication
-======================
-In this tutorial, you will write a 25-lines high-performance FP16 matrix multiplication
-kernel that achieves performance on par with cuBLAS.
-You will specifically learn about:
-
-- Block-level matrix multiplications
-- Multi-dimensional pointer arithmetic
-- Program re-ordering for improved L2 cache hit rate
-- Automatic performance tuning
-"""
-
 import torch
 
 import triton
@@ -159,18 +146,15 @@ def matmul_kernel(
 
     offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_am_index = tl.load(index_ptr + offs_am)
-    # rel = tl.load(rel_ptr + pid_m)
+    rel = tl.load(rel_ptr + pid_m)
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     a_mask = (offs_am_index[:, None] >= 0) & (offs_k[None, :] < K)
     a_ptrs = a_ptr + (offs_am_index[:, None] * stride_am +
                       offs_k[None, :] * stride_ak)
-    # a_ptrs = a_ptr + (offs_am[:, None] * stride_am +
-    #                   offs_k[None, :] * stride_ak)
+    b_ptr = b_ptr + rel * K * N
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk +
                       offs_bn[None, :] * stride_bn)
-    # b_ptrs = rel * K * N + b_ptr + (offs_k[:, None] * stride_bk +
-    #                                 offs_bn[None, :] * stride_bn)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, K, BLOCK_SIZE_K):
@@ -242,12 +226,14 @@ def leaky_relu(x):
 
 
 def matmul(a, b, idx, rel, activation=""):
+    # a: [num_edge, K]
+    # b: [R, K, N]
     # checks constraints
-    assert a.shape[1] == b.shape[0], "incompatible dimensions"
+    assert a.shape[1] == b.shape[1], "incompatible dimensions"
     assert a.is_contiguous(), "matrix A must be contiguous"
     assert b.is_contiguous(), "matrix B must be contiguous"
     M, K = a.shape
-    K, N = b.shape
+    R, K, N = b.shape
     M = idx.shape[0]
     assert (
         K % 32 == 0
@@ -268,8 +254,10 @@ def matmul(a, b, idx, rel, activation=""):
         K,
         a.stride(0),
         a.stride(1),
-        b.stride(0),
         b.stride(1),
+        b.stride(2),
+        # b.stride(0),
+        # b.stride(1),
         c.stride(0),
         c.stride(1),
         ACTIVATION=activation,
@@ -317,12 +305,10 @@ batched_rels = torch.tensor(batched_rels, dtype=torch.int64, device=a.device)
 print(new_idx.shape)
 print(batched_rels.shape)
 
-# idx = torch.arange(0, 2332486, dtype=torch.int64, device=a.device).reshape(-1)
-# idx = torch.randint(0,
-#                     2332486, (2332486, ),
-#                     dtype=torch.int64,
-#                     device=a.device).reshape(-1)
-triton_output = matmul(a, b, new_idx, batched_rels)[:num_edge]
+# rel_b = torch.randn((num_rel, 256, 256), device='cuda', dtype=torch.float32)
+rel_b = torch.repeat_interleave(b.unsqueeze(0), num_rel,
+                                dim=0).reshape(num_rel, 256, 256)
+triton_output = matmul(a, rel_b, new_idx, batched_rels)[:num_edge]
 torch.cuda.synchronize()
 torch_output = torch.matmul(a, b)
 print(f"triton_output={triton_output}")
@@ -332,6 +318,6 @@ print(triton.testing.allclose(triton_output, torch_output))
 #     print("✅ Triton and Torch match")
 # else:
 #     print("❌ Triton and Torch differ")
-print(triton.testing.do_bench(lambda: matmul(a, b, new_idx, batched_rels)))
-print(triton.testing.do_bench(lambda: matmul(a, b, new_idx, batched_rels)))
+print(triton.testing.do_bench(lambda: matmul(a, rel_b, new_idx, batched_rels)))
+print(triton.testing.do_bench(lambda: matmul(a, rel_b, new_idx, batched_rels)))
 print(triton.testing.do_bench(lambda: torch.matmul(a, b)))
