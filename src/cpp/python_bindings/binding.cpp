@@ -42,6 +42,7 @@ void init_rel_spmm(py::module &m) {
   m.def("aggr_rgcn_direct_func", &aggr_rgcn_direct_func, "");
   m.def("typed_linear", &run_typed_linear, "");
   m.def("pad_rel", &pad_rel_gpu, "");
+  m.def("pad_rel_idx", &pad_rel_idx_gpu, "");
 }
 
 void init_spmm_multihead(py::module &m) {

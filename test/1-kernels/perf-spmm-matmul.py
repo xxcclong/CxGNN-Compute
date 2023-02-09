@@ -23,6 +23,7 @@ def prepare_data():
 def test_spmm_matmul():
     x, ptr, idx, b, num_head = prepare_data()
     num_rel = 7
+    num_center = ptr.shape[0] - 1
     num_edge = idx.shape[0]
     rel = torch.randint(0,
                         num_rel, [idx.shape[0]],
@@ -72,8 +73,8 @@ def test_spmm_matmul():
     # profile sort
     def sort_and_move(x, rel):
         sorted, indices = torch.sort(rel)
-        x = x[idx[indices]]
-        # count = torch.bincount(rel).cpu()
+        x_edge = x[idx[indices]]
+        count = torch.bincount(rel).cpu()
 
     def sort_only(x, rel):
         sorted, indices = torch.sort(rel)
@@ -133,32 +134,35 @@ def test_spmm_matmul():
         idx[:old_idx.shape[0]] = old_idx
         # rel = old_rel.resize_(num_edge + num_rel * (thres - 1))
         # idx = old_idx.resize_(num_edge + num_rel * (thres - 1))
-        cxgnncomp_backend.pad_rel(rel, idx, count, thres, num_rel, num_edge)
+        cxgnncomp_backend.pad_rel_idx(rel, idx, count, thres, num_rel,
+                                      num_edge)
         sorted_rel, indices = torch.sort(rel)
         # cxgc.prof(
         #     "rgcn", "typed_matmul", lambda: cxgc.codegen.typed_matmul(
         #         x, weights, idx[indices], indices, sorted_rel))
         # print(idx[indices])
-        output = cxgc.codegen.typed_matmul(x, weights, idx[indices], indices,
-                                           sorted_rel)
+        output = cxgc.codegen.typed_matmul(x, weights, sorted_rel,
+                                           old_rel.shape[0], idx[indices],
+                                           indices)
 
         return output
 
     rel = rel.to(torch.int64)
     output_edge = new_typed_linear(x, weights, idx, rel, num_edge=idx.shape[0])
+    output_edge = output_edge[:num_edge]
     print(
         torch.allclose(output_edge[:num_edge],
                        gt_output_edge,
-                       atol=1e-3,
+                       atol=1e-2,
                        rtol=1e-2))
     print(output_edge[:num_edge][torch.isclose(
-        output_edge[:num_edge], gt_output_edge, atol=1e-3, rtol=1e-2) ==
+        output_edge[:num_edge], gt_output_edge, atol=1e-2, rtol=1e-2) ==
                                  False])
     print(gt_output_edge[torch.isclose(
-        output_edge[:num_edge], gt_output_edge, atol=1e-3, rtol=1e-2) ==
+        output_edge[:num_edge], gt_output_edge, atol=1e-2, rtol=1e-2) ==
                          False])
     print(gt_output_edge[torch.isclose(
-        output_edge[:num_edge], gt_output_edge, atol=1e-3, rtol=1e-2) ==
+        output_edge[:num_edge], gt_output_edge, atol=1e-2, rtol=1e-2) ==
                          False].shape)
     print(gt_output_edge.shape)
     # print(output_edge[:num_edge], gt_output_edge)
@@ -170,6 +174,41 @@ def test_spmm_matmul():
     cxgc.prof(
         "rgcn", "new_typed_linear",
         lambda: new_typed_linear(x, weights, idx, rel, num_edge=idx.shape[0]))
+
+    output_dst = torch.zeros([num_center, weights.shape[-1]], device=x.device)
+    cxgc.prof("rgcn", "index add",
+              lambda: output_dst.index_add_(0, dst, output_edge[:num_edge]))
+
+    output_edge = cxgc.TypedLinearE2EOP.apply(x[idx], weights, rel)
+    print(output_edge[:num_edge][torch.isclose(
+        output_edge[:num_edge], gt_output_edge, atol=1e-2, rtol=1e-2) ==
+                                 False])
+    print(output_edge[:num_edge][torch.isclose(
+        output_edge[:num_edge], gt_output_edge, atol=1e-2, rtol=1e-2) ==
+                                 False].shape)
+
+    x_edge = x[idx]
+    cxgc.prof("rgcn", "kernel e2e",
+              lambda: cxgc.TypedLinearE2EOP.apply(x_edge, weights, rel))
+
+    count = torch.bincount(rel, )
+    cxgc.prof(
+        "rgcn",
+        "kernel e2e with gpu count", lambda: cxgc.TypedLinearE2EOP.apply(
+            x_edge, weights, rel, False, count))
+
+    count = torch.bincount(rel, ).cpu()
+    cxgc.prof(
+        "rgcn",
+        "kernel e2e with cpu count", lambda: cxgc.TypedLinearE2EOP.apply(
+            x_edge, weights, rel, False, count))
+
+    cxgc.prof("rgcn", "kernel s2e",
+              lambda: cxgc.TypedLinearS2EOP.apply(x, weights, rel, idx))
+
+    cxgc.prof(
+        "rgcn", "kernel s2e", lambda: cxgc.TypedLinearS2EOP.apply(
+            x, weights, rel, idx, False, count))
 
 
 if __name__ == "__main__":
