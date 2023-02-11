@@ -3,7 +3,7 @@ import torch.nn.functional as F
 # from torch_geometric.nn import GCNConv, SAGEConv, GINConv, GATConv as  PyG_GCNConv, PyG_SAGEConv, PyG_GINConv, PyG_GATConv
 import torch_geometric.nn as pygnn
 import dgl.nn.pytorch.conv as dglnn
-from .graph_conv import MyGATConv, MyGCNConv, MyRGCNConv, MyRGCNConvNaive, MyRGCNConvOpt1, MyRGCNConvOpt2, MySageConv, MyGINConv
+from .graph_conv import MyGATConv, MyGCNConv, MyRGCNConv, MySageConv, MyGINConv
 from .util import log
 # import torch.autograd.profiler as profiler
 # from profile import gpu_profile
@@ -140,7 +140,7 @@ class RGCN(GNN):
         self.gen_rel = self.dataset_name == "rmag240m"
         if self.gen_rel:
             self.num_rel = 5
-            log.info("Generate relation type for RMAG240M at 5")
+            log.warn("Generate relation type for RMAG240M at 5")
         if "CSR" in self.graph_type:
             return MyRGCNConv(in_channels, out_channels, num_rel=self.num_rel)
         elif "DGL" in self.graph_type:
@@ -263,64 +263,6 @@ class GIN(GNN):
             return pygnn.GINConv(torch.nn.Linear(in_channels, out_channels))
         else:
             assert (0)
-
-
-class RGCN_CSR_Layer(torch.nn.Module):
-
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout, graph_type, num_rel, use_etype_schedule):
-        super(RGCN_CSR_Layer, self).__init__()
-        assert (graph_type in ["CSR_Layer"])
-        self.convs = torch.nn.ModuleList()
-        self.graph_type = graph_type
-        self.use_etype_schedule = use_etype_schedule
-        for _ in range(num_layers):
-            in_feat = in_channels if _ == 0 else hidden_channels
-            out_feat = out_channels if _ == num_layers - 1 else hidden_channels
-            if self.use_etype_schedule:
-                self.convs.append(MyRGCNConvOpt2(in_feat, out_feat, num_rel))
-            else:
-                self.convs.append(MyRGCNConvOpt1(in_feat, out_feat, num_rel))
-        self.num_layers = num_layers
-        self.dropout = dropout
-        self.num_rel = num_rel
-
-    def reset_parameters(self):
-        for conv in self.convs:
-            conv.reset_parameters()
-
-    def forward(self, batch):
-        x = batch.x
-        rel = torch.randint(0,
-                            self.num_rel,
-                            batch.idx.shape,
-                            device=x.device,
-                            dtype=torch.int32)
-        for i, conv in enumerate(self.convs[:-1]):
-            num_node = batch.num_node_in_layer[self.num_layers - 1 - i]
-            if i == 0:
-                num_used_node = batch.sub_to_full.shape[0]
-            else:
-                num_used_node = batch.num_node_in_layer[self.num_layers - i]
-            if self.use_etype_schedule:
-                x = conv(x, batch.etype_partition,
-                         batch.typed_num_node_in_layer, num_node, i,
-                         self.num_layers)
-            else:
-                x = conv(x, batch.ptr, batch.idx, rel, num_node, num_used_node)
-            # x = self.bns[i](x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        if self.use_etype_schedule:
-            x = self.convs[-1](x, batch.etype_partition,
-                               batch.typed_num_node_in_layer,
-                               batch.num_node_in_layer[0], self.num_layers - 1,
-                               self.num_layers)
-        else:
-            x = self.convs[-1](x, batch.ptr, batch.idx, rel,
-                               batch.num_node_in_layer[0],
-                               batch.num_node_in_layer[1])
-        return x.log_softmax(dim=-1)
 
 
 graph_type_dict = {
