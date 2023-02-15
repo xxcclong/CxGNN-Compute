@@ -34,3 +34,10 @@ torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
 
 void run_typed_linear(Tensor vin, Tensor weights, Tensor output, Tensor types,
                       int in_feat_tile);
+
+void run_typed_linear_s2e(Tensor vin, Tensor weights, Tensor output,
+                          Tensor src_id, Tensor types, int in_feat_tile);
+
+void run_typed_linear_s2d(Tensor vin, Tensor weights, Tensor output,
+                          Tensor src_id, Tensor dst_id, Tensor types,
+                          int in_feat_tile);

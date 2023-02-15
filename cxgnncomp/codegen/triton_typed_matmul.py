@@ -136,8 +136,8 @@ def typed_matmul_kernel(
     offs_am_index = tl.load(src_index_ptr + offs_am, mask=offs_am < M)
     rel_pos = pid_m * BLOCK_SIZE_M
     rel = tl.load(rel_ptr + rel_pos, mask=rel_pos < M)
-    if rel >= 7:
-        return
+    # if rel >= 7:
+    #     return
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     a_mask = (offs_am_index[:, None] >= 0) & (offs_am_index[:, None] < M) & (
@@ -302,8 +302,8 @@ def typed_matmul_kernel_single_index(
     offs_am_index = tl.load(src_index_ptr + offs_am, mask=offs_am < M)
     rel_pos = pid_m * BLOCK_SIZE_M
     rel = tl.load(rel_ptr + rel_pos, mask=rel_pos < M)
-    if rel >= 7:
-        return
+    # if rel >= 7:
+    #     return
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     a_mask = (offs_am_index[:, None] >= 0) & (offs_am_index[:, None] < M) & (
@@ -464,8 +464,8 @@ def typed_matmul_kernel_no_index(
     offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     rel_pos = pid_m * BLOCK_SIZE_M
     rel = tl.load(rel_ptr + rel_pos, mask=rel_pos < M)
-    if rel >= 7:
-        return
+    # if rel >= 7:
+    #     return
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     a_mask = (offs_k[None, :] < K) & (offs_am[:, None] < M)

@@ -31,6 +31,8 @@ def validate(cpw, rpb, cpb, block_size, feat_len):
         valid = 0
     if cpb > feat_len:
         valid = 0
+    if cpw > 256:
+        valid = 0
     return valid
 
 

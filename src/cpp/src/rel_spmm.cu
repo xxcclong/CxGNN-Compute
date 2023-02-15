@@ -268,6 +268,95 @@ void run_typed_linear(Tensor vin, Tensor weights, Tensor output, Tensor types,
       in_feat, out_feat, in_feat_tile, types.data<int>());
 }
 
+__global__ void typed_linear_kernel_s2e(float *vin, float *weights,
+                                        Index *src_ids, float *vout, Index num,
+                                        int INFEATURE, int OUTFEATURE,
+                                        int in_feat_tile, int *types) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int warp_id = tid / 32;
+  int lane_id = tid % 32;
+  if (warp_id >= num) return;
+  Index src_id = src_ids[warp_id];
+  extern __shared__ float sh[];
+  int sh_mem_offset = in_feat_tile * (threadIdx.x / 32);
+  float *sh_vin = sh + sh_mem_offset;
+  float *curr_weight = weights + INFEATURE * OUTFEATURE * types[warp_id];
+  for (int i = 0; i < INFEATURE / in_feat_tile; ++i) {
+    // load vin into shared memory
+    for (int j = lane_id; j < in_feat_tile; j += 32) {
+      sh_vin[j] = vin[src_id * INFEATURE + i * in_feat_tile + j];
+    }
+    for (int j = lane_id; j < OUTFEATURE; j += 32) {
+      float res = 0.f;
+      for (int k = 0; k < in_feat_tile; ++k) {
+        res += sh_vin[k] * curr_weight[(i * in_feat_tile + k) * OUTFEATURE + j];
+      }
+      vout[warp_id * OUTFEATURE + j] += res;
+    }
+  }
+}
+
+void run_typed_linear_s2e(Tensor vin, Tensor weights, Tensor output,
+                          Tensor src_id, Tensor types, int in_feat_tile) {
+  int num = src_id.size(0);
+  int in_feat = vin.size(1);
+  int out_feat = output.size(1);
+  int block_size = 256;
+  int num_blocks = ceil(num, block_size / 32);
+  if (in_feat_tile > in_feat) in_feat_tile = in_feat;
+  typed_linear_kernel_s2e<<<num_blocks, block_size,
+                            in_feat_tile * 32 * sizeof(float)>>>(
+      vin.data<float>(), weights.data<float>(), src_id.data<Index>(),
+      output.data<float>(), num, in_feat, out_feat, in_feat_tile,
+      types.data<int>());
+}
+
+__global__ void typed_linear_kernel_s2d(float *vin, float *weights,
+                                        Index *src_ids, Index *dst_ids,
+                                        float *vout, Index num, int INFEATURE,
+                                        int OUTFEATURE, int in_feat_tile,
+                                        int *types) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int warp_id = tid / 32;
+  int lane_id = tid % 32;
+  if (warp_id >= num) return;
+  Index src_id = src_ids[warp_id];
+  Index dst_id = dst_ids[warp_id];
+  extern __shared__ float sh[];
+  int sh_mem_offset = in_feat_tile * (threadIdx.x / 32);
+  float *sh_vin = sh + sh_mem_offset;
+  float *curr_weight = weights + INFEATURE * OUTFEATURE * types[warp_id];
+  for (int i = 0; i < INFEATURE / in_feat_tile; ++i) {
+    // load vin into shared memory
+    for (int j = lane_id; j < in_feat_tile; j += 32) {
+      sh_vin[j] = vin[src_id * INFEATURE + i * in_feat_tile + j];
+    }
+    for (int j = lane_id; j < OUTFEATURE; j += 32) {
+      float res = 0.f;
+      for (int k = 0; k < in_feat_tile; ++k) {
+        res += sh_vin[k] * curr_weight[(i * in_feat_tile + k) * OUTFEATURE + j];
+      }
+      atomicAdd(vout + dst_id * OUTFEATURE + j, res);
+    }
+  }
+}
+
+void run_typed_linear_s2d(Tensor vin, Tensor weights, Tensor output,
+                          Tensor src_id, Tensor dst_id, Tensor types,
+                          int in_feat_tile) {
+  int num = src_id.size(0);
+  int in_feat = vin.size(1);
+  int out_feat = output.size(1);
+  int block_size = 256;
+  int num_blocks = ceil(num, block_size / 32);
+  if (in_feat_tile > in_feat) in_feat_tile = in_feat;
+  typed_linear_kernel_s2d<<<num_blocks, block_size,
+                            in_feat_tile * 32 * sizeof(float)>>>(
+      vin.data<float>(), weights.data<float>(), src_id.data<Index>(),
+      dst_id.data<Index>(), output.data<float>(), num, in_feat, out_feat,
+      in_feat_tile, types.data<int>());
+}
+
 torch::Tensor AggrRelDirectFunction::forward(
     AutogradContext *ctx, torch::Tensor input, torch::Tensor ptr,
     torch::Tensor idx, torch::Tensor weights, torch::Tensor rel, Index num_node,
