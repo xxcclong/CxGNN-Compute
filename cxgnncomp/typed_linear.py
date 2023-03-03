@@ -1,7 +1,58 @@
 from .codegen.triton_typed_matmul import typed_matmul
+from .codegen.util import prof
 import torch
 import cxgnncomp_backend
 import torch.nn.functional as F
+import time
+
+
+def TypedLinearNaiveS2D(x, weights, types, src, dst, num_center, num_edge):
+    assert (num_edge != 0)
+    scattered_feature = torch.index_select(x, dim=0, index=src[:num_edge])
+    scattered_weight = torch.index_select(weights,
+                                          dim=0,
+                                          index=types[:num_edge])
+    transformed_feat = torch.mm(scattered_feature, scattered_weight)
+    output = torch.zeros([num_center, transformed_feat.shape[1]],
+                         device=x.device,
+                         dtype=x.dtype)
+    output.index_add_(0, dst[:num_edge], transformed_feat)
+    return output
+
+
+def TypedLinearS2DPushOP(x, weights, types, src, dst, num_type, num_center,
+                         num_edge):
+    torch.cuda.synchronize()
+    t0 = time.time()
+    max_src = torch.max(src) + 1
+    src_type = types * max_src + src
+    sorted, indices = torch.sort(src_type)
+    torch.cuda.synchronize()
+    t0 = time.time()
+    src_type, reverse_indices = torch.unique(src_type, return_inverse=True)
+    torch.cuda.synchronize()
+    t1 = time.time()
+    type_unique = torch.div(src_type, max_src, rounding_mode='floor')
+    src_unique = src_type % max_src
+    new_dst = dst[indices]
+    count = torch.bincount(reverse_indices)
+    torch.cuda.synchronize()
+    t2 = time.time()
+    num_item = src_unique.shape[0]
+    output = typed_matmul(x, weights, type_unique, num_item, src_unique, seq_output=True)
+    torch.cuda.synchronize()
+    t3 = time.time()
+    output = torch.repeat_interleave(output, count, dim=0)
+    torch.cuda.synchronize()
+    t4 = time.time()
+    output_dst = torch.zeros([num_center, weights.shape[-1]],
+                             dtype=x.dtype,
+                             device=x.device)
+    output_dst.index_add_(0, new_dst, output)
+    torch.cuda.synchronize()
+    t5 = time.time()
+    print(t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4)
+    return output_dst
 
 
 class TypedLinearE2EOP(torch.autograd.Function):
@@ -153,23 +204,51 @@ class TypedLinearS2DAggrMMOP(torch.autograd.Function):
 
 # it can auto diff
 def TypedLinearS2DSort(x, weights, ptr, idx, rel, num_center, count=None):
+    torch.cuda.synchronize()
+    t0 = time.time()
     dst = torch.repeat_interleave(torch.arange(num_center, device=x.device),
                                   ptr[1:num_center + 1] - ptr[:num_center])
     num_rel = weights.shape[0]
     output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
+    tgraph = 0
+    tnn = 0
+    tother = 0
     sorted_rel, indices = torch.sort(rel)
+    torch.cuda.synchronize()
+    t1 = time.time()
+    tother = t1 - t0
     cnt = 0
     if count is None:
         count = torch.bincount(rel, minlength=num_rel).cpu()
     else:
         count = count.cpu()
+    torch.cuda.synchronize()
+    t0 = time.time()
     src = idx[indices]
     dst = dst[indices]
+    torch.cuda.synchronize()
+    t1 = time.time()
+    tgraph += t1 - t0
     for i in range(num_rel):
         s = src[cnt:cnt + count[i]]
         d = dst[cnt:cnt + count[i]]
         cnt += count[i]
+        torch.cuda.synchronize()
+        t0 = time.time()
         feat = x[s]
+        torch.cuda.synchronize()
+        t1 = time.time()
+        tgraph += t1 - t0
         transformed_feat = F.linear(feat, weights[i].T)
+        torch.cuda.synchronize()
+        t2 = time.time()
         output.index_add_(0, d, transformed_feat)
-    return output
+        torch.cuda.synchronize()
+        t3 = time.time()
+        tgraph += t3 - t2
+        tnn += t2 - t1
+    # print('graph time: {:3f}'.format(tgraph))
+    # print('nn time: {:3f}'.format(tnn))
+    # print('other time: {:3f}'.format(tother))
+    # return output, tgraph, tnn, tother
+    return output  # , tgraph, tnn, tother

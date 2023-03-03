@@ -1,6 +1,6 @@
 '''
 Testing graph-prioritized and nn-priroritized scheduling for GCN,
-showing that for models with simple 
+showing that for models with simple
 '''
 
 import torch
@@ -80,4 +80,4 @@ for feat in feats:
     x = torch.randn(x.shape[0], feat, device=x.device, dtype=x.dtype)
     output_graph = bench_graph_gcn()
     output_nn, tnn, tgraph = bench_neural_gcn()
-    print(output_graph[0], tnn * 1000, tgraph * 1000, output_nn[0])
+    print(output_nn[0], tnn * 1000, tgraph * 1000, output_graph[0])

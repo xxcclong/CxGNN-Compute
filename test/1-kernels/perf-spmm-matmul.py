@@ -5,24 +5,26 @@ import time
 
 
 def prepare_data():
-    dset = "products"
-    infeat = 512
+    dset = "arxiv"
+    infeat = 256
     num_head = 1
-    # x, ptr, idx, b = cxgc.prepare_data_full_graph(
-    #     dset,
-    #     feat_len=infeat,
-    #     num_head=num_head,
-    # )
-    x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
-                                                     feat_len=infeat,
-                                                     num_head=num_head,
-                                                     num_seeds=1000)
+    x, ptr, idx, b = cxgc.prepare_data_full_graph(
+        dset,
+        feat_len=infeat,
+        num_head=num_head,
+    )
+    # x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
+    #                                                  feat_len=infeat,
+    #                                                  num_head=num_head,
+    #                                                  num_seeds=1000)
     return x, ptr, idx, b, num_head
 
 
 def test_spmm_matmul():
+    torch.manual_seed(0)
     x, ptr, idx, b, num_head = prepare_data()
-    num_rel = 15
+    # x = torch.ones_like(x)
+    num_rel = 7
     num_center = ptr.shape[0] - 1
     num_edge = idx.shape[0]
     rel = torch.randint(0,
@@ -46,6 +48,7 @@ def test_spmm_matmul():
     weights = torch.randn([num_rel, x.shape[-1], x.shape[-1]],
                           dtype=torch.float32,
                           device=x.device)
+    # weights = torch.ones_like(weights)
 
     # method 2
     output_dst1 = cxgc.TypedLinearS2DMMAggrOP.apply(x, weights, ptr, idx, rel,
@@ -54,6 +57,8 @@ def test_spmm_matmul():
                                                     ptr.shape[0] - 1)
     output_dst3 = cxgc.TypedLinearS2DSort(x, weights, ptr, idx, rel,
                                           ptr.shape[0] - 1)
+    output_dst4 = cxgc.TypedLinearS2DPushOP(x, weights, rel, idx, dst, num_rel,
+                                            num_center, num_edge)
     print(
         "correct rate output_dst1 vs output_dst2:",
         torch.sum(torch.isclose(output_dst1, output_dst2, atol=1e-2,
@@ -62,6 +67,11 @@ def test_spmm_matmul():
         "correct rate output_dst1 vs output_dst3:",
         torch.sum(torch.isclose(output_dst1, output_dst3, atol=1e-2,
                                 rtol=1e-2)) / torch.numel(output_dst1))
+    print(
+        "correct rate output_dst1 vs output_dst4:",
+        torch.sum(torch.isclose(output_dst1, output_dst4, atol=1e-2,
+                                rtol=1e-2)) / torch.numel(output_dst1))
+    # print(output_dst1, output_dst4)
     output_edge1 = cxgc.TypedLinearE2EOP.apply(x_edge, weights, rel_int64)
     output_edge2 = cxgc.TypedLinearE2EOP.apply(x_edge, weights, rel_int64,
                                                False, count)
@@ -98,6 +108,10 @@ def test_spmm_matmul():
     cxgc.prof(
         "typed linear", "s2d sort", lambda: cxgc.TypedLinearS2DSort(
             x, weights, ptr, idx, rel, ptr.shape[0] - 1))
+
+    cxgc.prof(
+        "typed linear", "s2d push", lambda: cxgc.TypedLinearS2DPushOP(
+            x, weights, rel, idx, dst, num_rel, num_center, num_edge))
 
     cxgc.prof("typed linear", "e2e",
               lambda: cxgc.TypedLinearE2EOP.apply(x_edge, weights, rel_int64))

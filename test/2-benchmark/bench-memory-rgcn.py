@@ -14,15 +14,15 @@ def prepare_data():
     dset = "arxiv"
     infeat = 64
     num_head = 1
-    # x, ptr, idx, b = cxgc.prepare_data_full_graph(
-    #     dset,
-    #     feat_len=infeat,
-    #     num_head=num_head,
-    # )
-    x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
-                                                     feat_len=infeat,
-                                                     num_head=num_head,
-                                                     num_seeds=1000)
+    x, ptr, idx, b = cxgc.prepare_data_full_graph(
+        dset,
+        feat_len=infeat,
+        num_head=num_head,
+    )
+    # x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
+    #                                                  feat_len=infeat,
+    #                                                  num_head=num_head,
+    #                                                  num_seeds=1000)
     return x, ptr, idx, b, num_head
 
 
@@ -30,13 +30,14 @@ x, ptr, idx, b, num_head = prepare_data()
 x.requires_grad_(True)
 dst = torch.repeat_interleave(torch.arange(ptr.shape[0] - 1, device=x.device),
                               ptr[1:] - ptr[:-1])
-num_rel = 7
+num_rel = 100
 num_edge = idx.shape[0]
 # print(x.shape, x.device, ptr.shape, idx.shape, num_rel, num_edge)
 rel = torch.randint(0,
                     num_rel, [idx.shape[0]],
                     dtype=torch.int32,
                     device=x.device)
+rel_int64 = rel.to(torch.int64)
 weights = torch.randn([num_rel, x.shape[-1], x.shape[-1]],
                       dtype=torch.float32,
                       device=x.device,
@@ -44,6 +45,13 @@ weights = torch.randn([num_rel, x.shape[-1], x.shape[-1]],
 num_edge = idx.shape[0]
 num_center = ptr.shape[0] - 1
 count = torch.bincount(rel).cpu()
+
+# idx_limited_range = torch.remainder(idx, 128)
+# idx_limited_range = torch.remainder(torch.arange(0, idx.shape[0], device=idx.device), num_center // 10)
+idx_limited_range = torch.ones_like(input=idx, dtype=torch.int64)
+
+print(
+    f"idx range {num_center} {torch.max(idx)} {torch.max(idx_limited_range)}")
 
 
 def bench_naive_rgcn():
@@ -97,6 +105,20 @@ def bench_graph_prior_rgcn2():
             x, weights, output, idx, dst, rel.int(), 32))
 
 
+def bench_rgcn_opt():
+    cxgc.prof(
+        "typed linear", "s2e with count", lambda: cxgc.TypedLinearS2EOP.apply(
+            x, weights, rel_int64, idx, False, count))
+    cxgc.prof(
+        "typed linear", "s2e with count idx: limited range",
+        lambda: cxgc.TypedLinearS2EOP.apply(x, weights, rel_int64,
+                                            idx_limited_range, False, count))
+    return cxgc.prof(
+        "typed linear", "s2e with count", lambda: cxgc.TypedLinearS2EOP.apply(
+            x, weights, rel_int64, idx, False, count))
+
+
+torch.backends.cuda.matmul.allow_tf32 = True
 feat = 32
 feats = []
 for i in range(10):
@@ -110,8 +132,11 @@ for feat in feats:
                           dtype=torch.float32,
                           device=x.device,
                           requires_grad=True)
-    # bench_naive_rgcn()
+    bench_rgcn_opt()
+    # bench_naive_rgcn() # OOM error due to scattered weight
     output_nn, tgraph, tnn, tother = bench_nn_prior_rgcn()
     # bench_graph_prior_rgcn()
     output_graph = bench_graph_prior_rgcn2()
     print(output_nn[0], tgraph, tnn, tother, output_graph[0])
+    x_edge = x[idx]
+    cxgc.prof("edge dense", "matmul", lambda: torch.matmul(x_edge, weights[0]))
