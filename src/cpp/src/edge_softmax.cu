@@ -212,3 +212,33 @@ torch::Tensor edge_value_degree(torch::Tensor ptr, Index num_dst,
                                          output.data<float>(), num_dst);
   return output;
 }
+
+__global__ void spmv_csr(Index *ptr, Index *idx, float *input, float *output,
+                         Index num_dst) {
+  int dst_id = ((blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5));
+  int laneid = threadIdx.x & 31;
+  if (dst_id < num_dst) {
+    Index begin = ptr[dst_id], end = ptr[dst_id + 1];
+    float val = 0.f;
+    for (int i = begin + laneid; i < end; i += 32) {
+      val += input[idx[i]];
+    }
+    // atomicAdd(output + dst_id, val);
+    for (int i = 16; i > 0; i >>= 1) {
+      val += __shfl_down_sync(0xffffffff, val, i);  // sum
+    }
+    if (laneid == 0) output[dst_id] = val;
+  }
+}
+
+torch::Tensor spmv(torch::Tensor ptr, torch::Tensor idx, torch::Tensor input,
+                   Index num_dst) {
+  auto output = input.new_empty({num_dst});
+  int block_size = 256;
+  dim3 grid, block;
+  grid.x = (num_dst + (block_size / 32) - 1) / (block_size / 32);
+  block.x = block_size;
+  spmv_csr<<<grid, block>>>(ptr.data<Index>(), idx.data<Index>(),
+                            input.data<float>(), output.data<float>(), num_dst);
+  return output;
+}

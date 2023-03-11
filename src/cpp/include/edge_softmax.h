@@ -25,3 +25,6 @@ torch::Tensor edge_softmax_forward(
 
 torch::Tensor edge_value_degree(torch::Tensor ptr, Index num_dst,
                                 Index num_edge);
+
+torch::Tensor spmv(torch::Tensor ptr, torch::Tensor idx, torch::Tensor input,
+                   Index num_dst);

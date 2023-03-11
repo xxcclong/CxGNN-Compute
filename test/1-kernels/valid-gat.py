@@ -12,49 +12,7 @@ feat_len = 128
 
 torch.manual_seed(0)
 
-
-def prepare_data():
-    torch.manual_seed(0)
-    # dataset_name = "paper100m"
-    # file_dir = "/home/huangkz/repos/new-diskgnn/DiskGNN/graph_loader/{}_batch.pt".format(
-    #     dataset_name)
-    file_dir = "/home/huangkz/repos/CxGNN-DL/dump.pt"
-    batch = torch.load(file_dir)
-    x = torch.randn([batch["num_node_in_layer"][-1], feat_len],
-                    dtype=torch.float32,
-                    device='cuda')
-    ptr = batch["ptr"].cuda()
-    idx = batch["idx"].cuda()
-    edge_index = torch.stack([
-        idx,
-        torch.repeat_interleave(torch.arange(
-            0, batch["num_node_in_layer"][-2], device="cuda"),
-                                repeats=ptr[1:] - ptr[:-1])
-    ],
-                             dim=0)
-    return x, ptr, idx, batch, edge_index
-
-
-def prepare_data_full_graph():
-    ptr, idx = cxgnndl.load_full_graph_structure("arxiv")
-    ptr = torch.from_numpy(ptr).cuda()
-    idx = torch.from_numpy(idx).cuda()
-    x = torch.randn([ptr.shape[0] - 1, feat_len],
-                    dtype=torch.float32,
-                    device='cuda')
-    edge_index = torch.stack([
-        idx,
-        torch.repeat_interleave(torch.arange(
-            0, ptr.shape[0] - 1, device="cuda"),
-                                repeats=ptr[1:] - ptr[:-1])
-    ],
-                             dim=0)
-    batch = {}
-    batch["num_node_in_layer"] = [ptr.shape[0] - 1, ptr.shape[0] - 1]
-    return x, ptr, idx, batch, edge_index
-
-
-x, ptr, idx, batch, edge_index = prepare_data_full_graph()
+x, ptr, idx, batch, edge_index = cxgnncomp.prepare_data_full_graph(need_edge_index=True)
 num_node_in_layer = batch["num_node_in_layer"]
 
 
@@ -194,10 +152,20 @@ def test_edge_softmax():
                                                num_edge=idx.shape[0],
                                                relu_l=0.2))
 
+    cxgnncomp.prof(
+        "edge_softmax", "spmv", lambda: cxgnncomp_backend.spmv(
+            ptr, idx, att_src.squeeze(), ptr.shape[0] - 1))
+
+    new_ptr, new_target = cxgnncomp.neighbor_grouping(ptr, neighbor_thres=256)
+    cxgnncomp.prof(
+        "edge_softmax", "spmv-neighbor-group", lambda: cxgnncomp_backend.spmv(
+            new_ptr, idx, att_src.squeeze(), new_ptr.shape[0] - 1))
+
 
 def test_edge_softmax_multi_head():
     from torch_geometric.utils import softmax
     num_head = 4
+    print(f"test_edge_softmax_multi_head head={num_head}")
     att = torch.randn([idx.shape[0], num_head], device="cuda")
     att_src = torch.randn([x.shape[0], num_head], device="cuda")
     att_dst = torch.randn([x.shape[0], num_head], device="cuda")
@@ -220,11 +188,11 @@ def test_edge_softmax_multi_head():
         cxgnncomp.prof(
             "edge_softmax", "cxgnn opwise",
             lambda: cxgnn_conv.edge_softmax_opwise(ptr=ptr,
-                                                idx=idx,
-                                                att_src=att_src,
-                                                att_dst=att_dst,
-                                                num_edge=idx.shape[0],
-                                                relu_l=0.2))
+                                                   idx=idx,
+                                                   att_src=att_src,
+                                                   att_dst=att_dst,
+                                                   num_edge=idx.shape[0],
+                                                   relu_l=0.2))
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
 
 
@@ -261,3 +229,7 @@ def test_gat_timer():
                  record_shapes=True) as prof:
         dgl_out = dgl_conv(dgl_graph, x).squeeze()
     print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=10))
+
+
+test_edge_softmax()
+test_edge_softmax_multi_head()
