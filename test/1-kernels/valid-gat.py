@@ -12,7 +12,8 @@ feat_len = 128
 
 torch.manual_seed(0)
 
-x, ptr, idx, batch, edge_index = cxgnncomp.prepare_data_full_graph(need_edge_index=True)
+x, ptr, idx, batch, edge_index = cxgnncomp.prepare_data_full_graph(
+    need_edge_index=True)
 num_node_in_layer = batch["num_node_in_layer"]
 
 
@@ -156,10 +157,13 @@ def test_edge_softmax():
         "edge_softmax", "spmv", lambda: cxgnncomp_backend.spmv(
             ptr, idx, att_src.squeeze(), ptr.shape[0] - 1))
 
-    new_ptr, new_target = cxgnncomp.neighbor_grouping(ptr, neighbor_thres=256)
-    cxgnncomp.prof(
-        "edge_softmax", "spmv-neighbor-group", lambda: cxgnncomp_backend.spmv(
-            new_ptr, idx, att_src.squeeze(), new_ptr.shape[0] - 1))
+    for thres in [32, 64, 128, 256, 512]:
+        new_ptr, new_target = cxgnncomp.neighbor_grouping(ptr,
+                                                          neighbor_thres=thres)
+        cxgnncomp.prof(
+            "edge_softmax",
+            "spmv-neighbor-group", lambda: cxgnncomp_backend.spmv(
+                new_ptr, idx, att_src.squeeze(), new_ptr.shape[0] - 1))
 
 
 def test_edge_softmax_multi_head():

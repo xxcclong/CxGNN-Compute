@@ -5,7 +5,7 @@ import numpy
 
 
 def prepare_data():
-    dset = "products"
+    dset = "arxiv"
     infeat = 256
     num_head = 4
     x, ptr, idx, b = cxgc.prepare_data_full_graph(
@@ -113,6 +113,9 @@ def test_spmm_multihead_neighbor_grouping():
         lambda: cxgnncomp_backend.spmm_multihead(
             new_ptr, idx, val, x, new_ptr.shape[0] - 1, cxgnncomp_backend.
             SPMM_MULTIHEAD_SCHEDULE.Optimal, 256))
+    ng_value = cxgnncomp_backend.spmm_multihead(
+        new_ptr, idx, val, x, new_ptr.shape[0] - 1,
+        cxgnncomp_backend.SPMM_MULTIHEAD_SCHEDULE.Optimal, 256)
 
     output = cxgc.tune_spmm(
         ptr.shape[0] - 1,
@@ -129,6 +132,25 @@ def test_spmm_multihead_neighbor_grouping():
         cxgnncomp_backend.run_spmm_multihead_configurable,
         [new_ptr, idx, val, x, new_ptr.shape[0] - 1],
     )
+    output_value = cxgc.tune_spmm(
+        new_ptr.shape[0] - 1,
+        idx.shape[0],
+        x.shape[-1],
+        cxgnncomp_backend.run_spmm_multihead_configurable,
+        [new_ptr, idx, val, x, new_ptr.shape[0] - 1],
+        performance_param=output[-1])
+    cxgc.compare(ng_value, output_value[-1])
+
+    for neighbor_thres in [32, 64, 128, 256, 512]:
+        print("neighbor thres = ", neighbor_thres)
+        new_ptr, new_target = cxgc.neighbor_grouping(ptr, neighbor_thres)
+        output = cxgc.tune_spmm(
+            new_ptr.shape[0] - 1,
+            idx.shape[0],
+            x.shape[-1],
+            cxgnncomp_backend.run_spmm_multihead_configurable,
+            [new_ptr, idx, val, x, new_ptr.shape[0] - 1],
+        )
 
 
 if __name__ == "__main__":
