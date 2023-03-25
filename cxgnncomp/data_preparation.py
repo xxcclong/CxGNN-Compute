@@ -17,19 +17,31 @@ def prepare_data():
     return x, ptr, idx, batch
 
 
-def prepare_data_full_graph(dset="arxiv", feat_len=128, num_head=1, need_edge_index=False):
-    print(f"=======\nLoading full graph structure... dataset={dset} feature length={feat_len} num_head={num_head}\n=======")
-    ptr, idx = cxgnndl.load_full_graph_structure(dset)
+def prepare_data_full_graph(
+    dset="products",
+    feat_len=128,
+    num_head=1,
+    need_edge_index=False,
+    need_feat=True,
+    undirected=True,
+):
+    print(
+        f"=======\nLoading full graph structure... dataset={dset} feature length={feat_len} num_head={num_head} undirected={undirected}\n======="
+    )
+    ptr, idx = cxgnndl.load_full_graph_structure(dset, undirected)
     ptr = torch.from_numpy(ptr).cuda()
     idx = torch.from_numpy(idx).cuda()
-    if num_head == 1:
-        x = torch.randn([ptr.shape[0] - 1, feat_len],
-                        dtype=torch.float32,
-                        device='cuda')
+    if need_feat:
+        if num_head == 1:
+            x = torch.randn([ptr.shape[0] - 1, feat_len],
+                            dtype=torch.float32,
+                            device='cuda')
+        else:
+            x = torch.randn([ptr.shape[0] - 1, num_head, feat_len],
+                            dtype=torch.float32,
+                            device='cuda')
     else:
-        x = torch.randn([ptr.shape[0] - 1, num_head, feat_len],
-                        dtype=torch.float32,
-                        device='cuda')
+        x = None
     batch = {}
     batch["num_node_in_layer"] = torch.tensor([ptr.shape[0] - 1] * 4)
     batch["num_edge_in_layer"] = torch.tensor([idx.shape[0]] * 4)
@@ -40,7 +52,7 @@ def prepare_data_full_graph(dset="arxiv", feat_len=128, num_head=1, need_edge_in
                 0, ptr.shape[0] - 1, device="cuda"),
                                     repeats=ptr[1:] - ptr[:-1])
         ],
-                                dim=0)
+                                 dim=0)
         return x, ptr, idx, batch, edge_index
     else:
         return x, ptr, idx, batch
