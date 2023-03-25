@@ -29,6 +29,7 @@ void init_compute(py::module &m) {
   m.def("selective_aggr_bwd", &selective_aggr_bwd, "selective aggr");
   m.def("gen_edge_type_mag240m", &gen_edge_type_mag240m, "");
   m.def("spmv", &spmv, "");
+  m.def("topo_sort", &topo_sort, "");
 }
 
 void init_spmm(py::module &m) {
