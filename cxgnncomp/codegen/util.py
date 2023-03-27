@@ -1,5 +1,4 @@
 import triton
-from ..util import log
 
 
 def compare(output1, output2):

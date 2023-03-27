@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import time
 
 
+# OOM
 def TypedLinearNaiveS2D(x, weights, types, src, dst, num_center, num_edge):
     assert (num_edge != 0)
     scattered_feature = torch.index_select(x, dim=0, index=src[:num_edge])
@@ -39,7 +40,12 @@ def TypedLinearS2DPushOP(x, weights, types, src, dst, num_type, num_center,
     torch.cuda.synchronize()
     t2 = time.time()
     num_item = src_unique.shape[0]
-    output = typed_matmul(x, weights, type_unique, num_item, src_unique, seq_output=True)
+    output = typed_matmul(x,
+                          weights,
+                          type_unique,
+                          num_item,
+                          src_unique,
+                          seq_output=True)
     torch.cuda.synchronize()
     t3 = time.time()
     output = torch.repeat_interleave(output, count, dim=0)
@@ -60,7 +66,6 @@ class TypedLinearE2EOP(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, weights, types, preprocessed=False, count=None):
-        ctx.save_for_backward(x, weights, types)
         if preprocessed:
             return typed_matmul(x, weights, types, x.shape[0])
         thres = 256
@@ -78,11 +83,23 @@ class TypedLinearE2EOP(torch.autograd.Function):
                                   types.shape[0])
         sorted_types, indices = torch.sort(new_types)
         output = typed_matmul(x, weights, sorted_types, num_item, indices)
+        ctx.save_for_backward(x, weights, types, indices, sorted_types)
         return output[:num_item]
 
     @staticmethod
     def backward(ctx, grad_out):
-        pass
+        # a naive implementation
+        x, weights, types, indices, sorted_types = ctx.saved_tensors
+        num_rel = weights.shape[0]
+        num_item = types.shape[0]
+        trans_weights = torch.transpose(weights, 1, 2).contiguous()
+        grad_x = typed_matmul(grad_out, trans_weights, sorted_types, num_item,
+                              indices)
+        grad_weights = torch.empty_like(weights)
+        for i in range(num_rel):
+            # the indexing here is not efficient
+            grad_weights[i] = torch.mm(x[types == i].t(), grad_out[types == i])
+        return grad_x, grad_weights, None
 
 
 class TypedLinearS2EOP(torch.autograd.Function):

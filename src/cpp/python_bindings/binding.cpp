@@ -34,6 +34,8 @@ void init_compute(py::module &m) {
 
 void init_spmm(py::module &m) {
   m.def("run_spmm_configurable", &run_spmm_configurable, "run spmm");
+  m.def("run_spmm_configurable_bwd", &run_spmm_configurable_bwd,
+        "run spmm bwd");
   m.def("run_spmm_configurable_int32", &run_spmm_configurable_int32,
         "run spmm");
 }

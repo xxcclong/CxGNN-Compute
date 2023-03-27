@@ -54,6 +54,48 @@ torch::Tensor run_spmm_configurable(torch::Tensor ptr, torch::Tensor idx,
   return output;
 }
 
+torch::Tensor run_spmm_configurable_bwd(torch::Tensor ptr, torch::Tensor idx,
+                                        torch::Tensor vin,
+                                        torch::Tensor grad_vout, Index num_node,
+                                        int grid_x, int grid_y, int block_x,
+                                        int block_y, int rpb, int cpb, int cpw,
+                                        int grid_map, int block_map) {
+  ASSERTWITH(grad_vout.dim() == 2, "vin must be 2D");
+  int feat_len = grad_vout.sizes().back();
+  auto grad_vin = torch::zeros_like(vin);
+  if (cpw == 32) {
+    run_spmm_sharedmem_bwd<<<dim3(grid_x, grid_y, 1), dim3(block_x, block_y, 1),
+                             block_x * block_y * sizeof(int)>>>(
+        ptr.data<Index>(), idx.data<Index>(), grad_vout.data<float>(),
+        grad_vin.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+  } else if (cpw == 64) {
+    run_spmm_sharedmem_bwd_2<<<dim3(grid_x, grid_y, 1),
+                               dim3(block_x, block_y, 1),
+                               block_x * block_y * sizeof(int)>>>(
+        ptr.data<Index>(), idx.data<Index>(), grad_vout.data<float>(),
+        grad_vin.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+  } else if (cpw == 128) {
+    run_spmm_sharedmem_bwd_4<<<dim3(grid_x, grid_y, 1),
+                               dim3(block_x, block_y, 1),
+                               block_x * block_y * sizeof(int)>>>(
+        ptr.data<Index>(), idx.data<Index>(), grad_vout.data<float>(),
+        grad_vin.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+  } else if (cpw == 256) {
+    run_spmm_sharedmem_bwd_8<<<dim3(grid_x, grid_y, 1),
+                               dim3(block_x, block_y, 1),
+                               block_x * block_y * sizeof(int)>>>(
+        ptr.data<Index>(), idx.data<Index>(), grad_vout.data<float>(),
+        grad_vin.data<float>(), num_node, feat_len, rpb, cpb, cpw, grid_map,
+        block_map);
+  } else {
+    ASSERT(0);
+  }
+  return grad_vin;
+}
+
 torch::Tensor run_spmm_configurable_int32(torch::Tensor ptr, torch::Tensor idx,
                                           torch::Tensor vin, Index num_node,
                                           int grid_x, int grid_y, int block_x,

@@ -8,6 +8,9 @@ import torch.nn.functional as F
 from torch_scatter import segment_csr, gather_csr
 from .timer import TimerOP
 from .graph_kernel import SpMMValOP
+from .typed_linear import TypedLinearE2EOP
+from .util import global_tuner
+import cxgnncomp_backend
 
 torch.fx.wrap("edge_attention")
 torch.fx.wrap("sage_sum_forward_edge_value")
@@ -83,9 +86,13 @@ class RGCNOP(torch.autograd.Function):
         num_rel = weights.shape[0]
         output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
         for i in range(num_rel):
+            weights[i] = TimerOP.apply(weights[i], f"mm{i}", True)
             transformed_x = torch.mm(x, weights[i])
+            transformed_x = TimerOP.apply(transformed_x, f"mm{i}", False)
+            transformed_x = TimerOP.apply(transformed_x, f"selective{i}", True)
             selective_aggr(transformed_x, ptr, idx, (rel == i), output,
                            num_center)
+            output = TimerOP.apply(output, f"selective{i}", False)
         return output
 
     @staticmethod
@@ -100,9 +107,15 @@ class RGCNOP(torch.autograd.Function):
         for i in range(num_rel):
             grad_selective = torch.zeros([num_node, grad_out.shape[-1]],
                                          device=x.device)
+            grad_selective = TimerOP.apply(grad_selective, f"selective_bwd{i}",
+                                           True)
             selective_aggr_bwd(grad_out, ptr, idx, (rel == i), grad_selective,
                                num_center)  # pass grad through selective_aggr
+            grad_selective = TimerOP.apply(grad_selective, f"selective_bwd{i}",
+                                           False)
+            grad_selective = TimerOP.apply(grad_selective, f"mm_bwd{i}", True)
             grad_x += torch.mm(grad_selective, weights[i].transpose(0, 1))
+            grad_selective = TimerOP.apply(grad_selective, f"mm_bwd{i}", False)
             grad_weights.append(torch.mm(x_t, grad_selective))
         return grad_x, torch.stack(grad_weights), None, None, None, None
 
@@ -174,6 +187,43 @@ class RGCNOP3(torch.autograd.Function):
             weights), None, None, None, None
 
 
+def run_rgcn4(x, ptr, idx, edge_types, linear, num_center):
+    x_idxed = x[idx]
+    out = TypedLinearE2EOP.apply(x_idxed, linear, edge_types)
+    new_idx = torch.arange(0, idx.shape[0], device=x_idxed.device)
+    out = AggrOP.apply(out, ptr, new_idx, num_center)
+    return out
+
+
+class AggrOP(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, ptr, idx, num_center):
+        ctx.save_for_backward(x, ptr, idx, num_center)
+        output_dst = global_tuner.tune_graph(
+            num_center,
+            idx.shape[0],
+            x.shape[-1],
+            cxgnncomp_backend.run_spmm_configurable,
+            [
+                ptr,
+                idx,
+                x,
+                num_center,
+            ],
+        )
+        return output_dst
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, ptr, idx, num_center = ctx.saved_tensors
+        grad_vin = global_tuner.tune_graph(
+            num_center, idx.shape[0], grad_out.shape[-1],
+            cxgnncomp_backend.run_spmm_configurable_bwd,
+            [ptr, idx, x, grad_out, num_center])
+        return grad_vin, None, None, None
+
+
 class MyRGCNConv(torch.nn.Module):
 
     def __init__(self, in_channels, hidden_channels, num_rel):
@@ -195,7 +245,8 @@ class MyRGCNConv(torch.nn.Module):
         pass
 
     def forward(self, x, ptr, idx, edge_types, num_node):
-        out = RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
+        # out = RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
+        out = run_rgcn4(x, ptr, idx, edge_types, self.linear, num_node)
         deg = ptr[1:] - ptr[:-1]
         out = out / deg.unsqueeze(-1)[:out.shape[0]]
         # out = self.single_linear(x)

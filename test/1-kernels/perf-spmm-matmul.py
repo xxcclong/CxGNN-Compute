@@ -2,21 +2,25 @@ import torch
 import cxgnncomp as cxgc
 import cxgnncomp_backend
 import time
+from torch.profiler import profile, record_function, ProfilerActivity
 
 
 def prepare_data():
-    dset = "arxiv"
     infeat = 256
     num_head = 1
-    x, ptr, idx, b = cxgc.prepare_data_full_graph(
-        dset,
-        feat_len=infeat,
-        num_head=num_head,
-    )
-    # x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
-    #                                                  feat_len=infeat,
-    #                                                  num_head=num_head,
-    #                                                  num_seeds=1000)
+
+    # dset = "arxiv"
+    # x, ptr, idx, b = cxgc.prepare_data_full_graph(
+    #     dset,
+    #     feat_len=infeat,
+    #     num_head=num_head,
+    # )
+
+    dset = "papers100M"
+    x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
+                                                     feat_len=infeat,
+                                                     num_head=num_head,
+                                                     num_seeds=1000)
     return x, ptr, idx, b, num_head
 
 
@@ -133,14 +137,6 @@ def test_spmm_matmul():
         "aggregation", "s2d",
         lambda: cxgnncomp_backend.sage_sum_forward(x, ptr, idx, num_center))
 
-    # cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], x.shape[1],
-    #                cxgnncomp_backend.run_spmm_configurable,
-    #                [ptr, idx, x, ptr.shape[0] - 1])
-
-    # cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], x.shape[1],
-    #                cxgnncomp_backend.run_spmm_configurable,
-    #                [ptr, new_idx, output_edge1, ptr.shape[0] - 1])
-
     output_dst4 = torch.zeros([num_center, x.shape[-1]],
                               dtype=x.dtype,
                               device=x.device)
@@ -152,6 +148,34 @@ def test_spmm_matmul():
     cxgc.prof("aggregation", "e2d index_add_",
               lambda: output_dst4.index_add_(0, dst, output_edge1))
 
+    tuner = cxgc.Tuner()
+
+    output = tuner.tune_graph(ptr.shape[0] - 1, idx.shape[0], x.shape[1],
+                              cxgnncomp_backend.run_spmm_configurable,
+                              [ptr, idx, x, ptr.shape[0] - 1])
+
+    output = tuner.tune_graph(ptr.shape[0] - 1, new_idx.shape[0], x.shape[1],
+                              cxgnncomp_backend.run_spmm_configurable,
+                              [ptr, new_idx, output_edge1, ptr.shape[0] - 1])
+
+    new_ptr, new_target = cxgc.neighbor_grouping(ptr, 32)
+
+    output = tuner.tune_graph(new_ptr.shape[0] - 1, idx.shape[0], x.shape[1],
+                              cxgnncomp_backend.run_spmm_configurable,
+                              [new_ptr, idx, x, new_ptr.shape[0] - 1])
+
+    output = tuner.tune_graph(
+        new_ptr.shape[0] - 1, new_idx.shape[0], x.shape[1],
+        cxgnncomp_backend.run_spmm_configurable,
+        [new_ptr, new_idx, output_edge1, new_ptr.shape[0] - 1])
+
+    output = tuner.tune_graph(new_ptr.shape[0] - 1, idx.shape[0], x.shape[1],
+                              cxgnncomp_backend.run_spmm_configurable,
+                              [new_ptr, idx, x, new_ptr.shape[0] - 1])
+
 
 if __name__ == "__main__":
-    test_spmm_matmul()
+    with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        test_spmm_matmul()
+    prof.export_chrome_trace("typed_linears_trace.json")

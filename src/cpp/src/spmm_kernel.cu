@@ -795,3 +795,252 @@ __global__ void run_spmm_sharedmem_step_8_int(
   vout[target_addr + 192] = res6;
   vout[target_addr + 224] = res7;
 }
+
+__global__ void run_spmm_sharedmem_bwd(const Index *__restrict__ ptr,
+                                       const Index *__restrict__ idx,
+                                       const float *__restrict__ grad_vout,
+                                       float *__restrict__ grad_vin,
+                                       int num_node, int INFEATURE, int rpb,
+                                       int cpb, int cpw, int grid_map,
+                                       int block_map) {
+  extern __shared__ int sh[];
+  int shared_mem_offset = threadIdx.y * blockDim.x;
+  int shared_mem_offset2 = threadIdx.x / 32 * 32;
+  int required_num_block = INFEATURE / cpb;
+  int a = blockIdx.x / required_num_block * gridDim.y + blockIdx.y;
+  int b = blockIdx.x * (gridDim.y / required_num_block) +
+          blockIdx.y / required_num_block;
+  int block_start_row = grid_map == 0 ? a : b;
+  block_start_row *= rpb;
+  int block_start_col = grid_map == 0 ? (blockIdx.x % required_num_block) * cpb
+                                      : (blockIdx.y % required_num_block) * cpb;
+  int required_num_warp = cpb / cpw;
+  int c = (threadIdx.x / 32) / required_num_warp * blockDim.y + threadIdx.y;
+  int d = (threadIdx.x / 32) * (blockDim.y / required_num_warp) +
+          threadIdx.y / required_num_warp;
+  int row = block_start_row + (block_map == 0 ? c : d);
+  int lane = threadIdx.x & 31;
+  int col = block_start_col +
+            (block_map == 0 ? ((threadIdx.x / 32) % required_num_warp) * cpw
+                            : (threadIdx.y % required_num_warp) * cpw);
+  col += lane * cpw / 32;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float grad = 0.f;
+  if (visit_col < INFEATURE) {
+    grad = grad_vout[row * INFEATURE + visit_col];
+  }
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      sh[shared_mem_offset + threadIdx.x] = (int)(idx[i + lane]);
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = sh[shared_mem_offset + shared_mem_offset2 + j];
+      Index target_addr = (Index)neighbor_id * infeat + visit_col;
+      if (visit_col < INFEATURE) {
+        atomicAdd(grad_vin + target_addr, grad);
+      }
+    }
+  }
+}
+
+__global__ void run_spmm_sharedmem_bwd_2(const Index *__restrict__ ptr,
+                                         const Index *__restrict__ idx,
+                                         const float *__restrict__ grad_vout,
+                                         float *__restrict__ grad_vin,
+                                         int num_node, int INFEATURE, int rpb,
+                                         int cpb, int cpw, int grid_map,
+                                         int block_map) {
+  extern __shared__ int sh[];
+  int shared_mem_offset = threadIdx.y * blockDim.x;
+  int shared_mem_offset2 = threadIdx.x / 32 * 32;
+  int required_num_block = INFEATURE / cpb;
+  int a = blockIdx.x / required_num_block * gridDim.y + blockIdx.y;
+  int b = blockIdx.x * (gridDim.y / required_num_block) +
+          blockIdx.y / required_num_block;
+  int block_start_row = grid_map == 0 ? a : b;
+  block_start_row *= rpb;
+  int block_start_col = grid_map == 0 ? (blockIdx.x % required_num_block) * cpb
+                                      : (blockIdx.y % required_num_block) * cpb;
+  int required_num_warp = cpb / cpw;
+  int c = (threadIdx.x / 32) / required_num_warp * blockDim.y + threadIdx.y;
+  int d = (threadIdx.x / 32) * (blockDim.y / required_num_warp) +
+          threadIdx.y / required_num_warp;
+  int row = block_start_row + (block_map == 0 ? c : d);
+  int lane = threadIdx.x & 31;
+  int col = block_start_col +
+            (block_map == 0 ? ((threadIdx.x / 32) % required_num_warp) * cpw
+                            : (threadIdx.y % required_num_warp) * cpw);
+  col += lane * cpw / 32;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float grad0 = 0.f;
+  float grad1 = 0.f;
+  if (visit_col < INFEATURE) {
+    grad0 = grad_vout[row * INFEATURE + visit_col];
+    grad1 = grad_vout[row * INFEATURE + visit_col + 1];
+  }
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      sh[shared_mem_offset + threadIdx.x] = (int)(idx[i + lane]);
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = sh[shared_mem_offset + shared_mem_offset2 + j];
+      Index target_addr = (Index)neighbor_id * infeat + visit_col;
+      if (visit_col < INFEATURE) {
+        atomicAdd(grad_vin + target_addr, grad0);
+        atomicAdd(grad_vin + target_addr + 1, grad1);
+      }
+    }
+  }
+}
+
+__global__ void run_spmm_sharedmem_bwd_4(const Index *__restrict__ ptr,
+                                         const Index *__restrict__ idx,
+                                         const float *__restrict__ grad_vout,
+                                         float *__restrict__ grad_vin,
+                                         int num_node, int INFEATURE, int rpb,
+                                         int cpb, int cpw, int grid_map,
+                                         int block_map) {
+  extern __shared__ int sh[];
+  int shared_mem_offset = threadIdx.y * blockDim.x;
+  int shared_mem_offset2 = threadIdx.x / 32 * 32;
+  int required_num_block = INFEATURE / cpb;
+  int a = blockIdx.x / required_num_block * gridDim.y + blockIdx.y;
+  int b = blockIdx.x * (gridDim.y / required_num_block) +
+          blockIdx.y / required_num_block;
+  int block_start_row = grid_map == 0 ? a : b;
+  block_start_row *= rpb;
+  int block_start_col = grid_map == 0 ? (blockIdx.x % required_num_block) * cpb
+                                      : (blockIdx.y % required_num_block) * cpb;
+  int required_num_warp = cpb / cpw;
+  int c = (threadIdx.x / 32) / required_num_warp * blockDim.y + threadIdx.y;
+  int d = (threadIdx.x / 32) * (blockDim.y / required_num_warp) +
+          threadIdx.y / required_num_warp;
+  int row = block_start_row + (block_map == 0 ? c : d);
+  int lane = threadIdx.x & 31;
+  int col = block_start_col +
+            (block_map == 0 ? ((threadIdx.x / 32) % required_num_warp) * cpw
+                            : (threadIdx.y % required_num_warp) * cpw);
+  col += lane * cpw / 32;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float grad0 = 0.f;
+  float grad1 = 0.f;
+  float grad2 = 0.f;
+  float grad3 = 0.f;
+  if (visit_col < INFEATURE) {
+    grad0 = grad_vout[row * INFEATURE + visit_col];
+    grad1 = grad_vout[row * INFEATURE + visit_col + 1];
+    grad2 = grad_vout[row * INFEATURE + visit_col + 2];
+    grad3 = grad_vout[row * INFEATURE + visit_col + 3];
+  }
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      sh[shared_mem_offset + threadIdx.x] = (int)(idx[i + lane]);
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = sh[shared_mem_offset + shared_mem_offset2 + j];
+      Index target_addr = (Index)neighbor_id * infeat + visit_col;
+      if (visit_col < INFEATURE) {
+        atomicAdd(grad_vin + target_addr, grad0);
+        atomicAdd(grad_vin + target_addr + 1, grad1);
+        atomicAdd(grad_vin + target_addr + 2, grad2);
+        atomicAdd(grad_vin + target_addr + 3, grad3);
+      }
+    }
+  }
+}
+
+__global__ void run_spmm_sharedmem_bwd_8(const Index *__restrict__ ptr,
+                                         const Index *__restrict__ idx,
+                                         const float *__restrict__ grad_vout,
+                                         float *__restrict__ grad_vin,
+                                         int num_node, int INFEATURE, int rpb,
+                                         int cpb, int cpw, int grid_map,
+                                         int block_map) {
+  extern __shared__ int sh[];
+  int shared_mem_offset = threadIdx.y * blockDim.x;
+  int shared_mem_offset2 = threadIdx.x / 32 * 32;
+  int required_num_block = INFEATURE / cpb;
+  int a = blockIdx.x / required_num_block * gridDim.y + blockIdx.y;
+  int b = blockIdx.x * (gridDim.y / required_num_block) +
+          blockIdx.y / required_num_block;
+  int block_start_row = grid_map == 0 ? a : b;
+  block_start_row *= rpb;
+  int block_start_col = grid_map == 0 ? (blockIdx.x % required_num_block) * cpb
+                                      : (blockIdx.y % required_num_block) * cpb;
+  int required_num_warp = cpb / cpw;
+  int c = (threadIdx.x / 32) / required_num_warp * blockDim.y + threadIdx.y;
+  int d = (threadIdx.x / 32) * (blockDim.y / required_num_warp) +
+          threadIdx.y / required_num_warp;
+  int row = block_start_row + (block_map == 0 ? c : d);
+  int lane = threadIdx.x & 31;
+  int col = block_start_col +
+            (block_map == 0 ? ((threadIdx.x / 32) % required_num_warp) * cpw
+                            : (threadIdx.y % required_num_warp) * cpw);
+  col += lane * cpw / 32;
+  Index visit_col = col;
+  Index infeat = INFEATURE;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float grad0 = 0.f;
+  float grad1 = 0.f;
+  float grad2 = 0.f;
+  float grad3 = 0.f;
+  float grad4 = 0.f;
+  float grad5 = 0.f;
+  float grad6 = 0.f;
+  float grad7 = 0.f;
+  if (visit_col < INFEATURE) {
+    grad0 = grad_vout[row * INFEATURE + visit_col];
+    grad1 = grad_vout[row * INFEATURE + visit_col + 1];
+    grad2 = grad_vout[row * INFEATURE + visit_col + 2];
+    grad3 = grad_vout[row * INFEATURE + visit_col + 3];
+    grad4 = grad_vout[row * INFEATURE + visit_col + 4];
+    grad5 = grad_vout[row * INFEATURE + visit_col + 5];
+    grad6 = grad_vout[row * INFEATURE + visit_col + 6];
+    grad7 = grad_vout[row * INFEATURE + visit_col + 7];
+  }
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      sh[shared_mem_offset + threadIdx.x] = (int)(idx[i + lane]);
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = sh[shared_mem_offset + shared_mem_offset2 + j];
+      Index target_addr = (Index)neighbor_id * infeat + visit_col;
+      if (visit_col < INFEATURE) {
+        atomicAdd(grad_vin + target_addr, grad0);
+        atomicAdd(grad_vin + target_addr + 1, grad1);
+        atomicAdd(grad_vin + target_addr + 2, grad2);
+        atomicAdd(grad_vin + target_addr + 3, grad3);
+        atomicAdd(grad_vin + target_addr + 4, grad0);
+        atomicAdd(grad_vin + target_addr + 5, grad1);
+        atomicAdd(grad_vin + target_addr + 6, grad2);
+        atomicAdd(grad_vin + target_addr + 7, grad3);
+      }
+    }
+  }
+}

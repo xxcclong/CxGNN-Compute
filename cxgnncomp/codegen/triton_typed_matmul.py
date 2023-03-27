@@ -328,13 +328,14 @@ def typed_matmul_kernel_single_index(
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     # c_ptrs = c_ptr + stride_cm * offs_cm[:,
     #                                      None] + stride_cn * offs_cn[None, :]
-
+    # offset on m for c is the same as a's
     c_ptrs = c_ptr + stride_cm * offs_am_index[:, None] + stride_cn * offs_cn[
         None, :]
     c_mask = (offs_am_index[:, None] >= 0) & (offs_am_index[:, None] < M) & (
         offs_cn[None, :] < N) & (offs_am[:, None] < M)
     tl.store(c_ptrs, accumulator, mask=c_mask)
     # tl.atomic_add(c_ptrs, accumulator, mask=c_mask)
+
 
 @triton.autotune(
     configs=[
@@ -487,15 +488,12 @@ def typed_matmul_kernel_single_index_seq_output(
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
 
-    # offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    # c_ptrs = c_ptr + stride_cm * offs_cm[:,
-    #                                      None] + stride_cn * offs_cn[None, :]
-
-    c_ptrs = c_ptr + stride_cm * offs_am[:, None] + stride_cn * offs_cn[
-        None, :]
-    c_mask = (offs_am[:, None] >= 0) & (offs_am[:, None] < M) & (
-        offs_cn[None, :] < N) 
+    # offset for c m is sequential
+    c_ptrs = c_ptr + stride_cm * offs_am[:,
+                                         None] + stride_cn * offs_cn[None, :]
+    c_mask = (offs_am[:, None] >= 0) & (offs_am[:, None] <
+                                        M) & (offs_cn[None, :] < N)
     tl.store(c_ptrs, accumulator, mask=c_mask)
     # tl.atomic_add(c_ptrs, accumulator, mask=c_mask)
 
@@ -656,7 +654,13 @@ def typed_matmul_kernel_no_index(
     tl.store(c_ptrs, accumulator, mask=c_mask)
 
 
-def typed_matmul(a, b, rel, num_valid_item=-1, src_idx=None, dst_idx=None, seq_output=False):
+def typed_matmul(a,
+                 b,
+                 rel,
+                 num_valid_item=-1,
+                 src_idx=None,
+                 dst_idx=None,
+                 seq_output=False):
     assert a.shape[1] == b.shape[1], "incompatible dimensions"
     assert a.is_contiguous(), "matrix A must be contiguous"
     assert b.is_contiguous(), "matrix B must be contiguous"

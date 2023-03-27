@@ -35,3 +35,10 @@ torch::Tensor run_spmm_multihead_configurable(
     torch::Tensor ptr, torch::Tensor idx, torch::Tensor val, torch::Tensor vin,
     Index num_node, int grid_x, int grid_y, int block_x, int block_y, int rpb,
     int cpb, int cpw, int grid_map, int block_map);
+
+torch::Tensor run_spmm_configurable_bwd(torch::Tensor ptr, torch::Tensor idx,
+                                        torch::Tensor vin,
+                                        torch::Tensor grad_vout, Index num_node,
+                                        int grid_x, int grid_y, int block_x,
+                                        int block_y, int rpb, int cpb, int cpw,
+                                        int grid_map, int block_map);
