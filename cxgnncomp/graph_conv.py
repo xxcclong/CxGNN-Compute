@@ -187,10 +187,13 @@ class RGCNOP3(torch.autograd.Function):
             weights), None, None, None, None
 
 
-def run_rgcn4(x, ptr, idx, edge_types, linear, num_center):
-    x_idxed = x[idx]
+def run_rgcn4(x, ptr, idx, edge_types, linear, num_center, num_edge):
+    # print(x.shape, ptr.shape, idx.shape, edge_types.shape, linear.shape,
+    #       x.dtype, ptr.dtype, idx.dtype, edge_types.dtype, linear.dtype,
+    #       x.device, ptr.device, idx.device, edge_types.device, linear.device)
+    x_idxed = x[idx[:num_edge]]
     out = TypedLinearE2EOP.apply(x_idxed, linear, edge_types)
-    new_idx = torch.arange(0, idx.shape[0], device=x_idxed.device)
+    new_idx = torch.arange(0, num_edge, device=x_idxed.device)
     out = AggrOP.apply(out, ptr, new_idx, num_center)
     return out
 
@@ -246,7 +249,13 @@ class MyRGCNConv(torch.nn.Module):
 
     def forward(self, x, ptr, idx, edge_types, num_node):
         # out = RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
-        out = run_rgcn4(x, ptr, idx, edge_types, self.linear, num_node)
+        out = run_rgcn4(x,
+                        ptr,
+                        idx,
+                        edge_types,
+                        self.linear,
+                        num_node,
+                        num_edge=edge_types.shape[0])
         deg = ptr[1:] - ptr[:-1]
         out = out / deg.unsqueeze(-1)[:out.shape[0]]
         # out = self.single_linear(x)

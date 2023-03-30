@@ -46,32 +46,29 @@ def test_conv_training():
     lossfn = torch.nn.MSELoss()
     torch.cuda.synchronize()
 
-    with profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-        if isinstance(conv, cxgc.MyGATConv):
-            cxgc.prof(
-                "train conv", "gat", lambda: train(conv, [
-                    feat, ptr, idx, b["num_node_in_layer"][-2], b[
-                        "num_node_in_layer"][-1], idx.shape[0]
-                ], feat_label, optimizer, lossfn))
-        elif isinstance(conv, MyRGCNConv):
-            edge_types = torch.randint(0,
-                                       conv.num_rel, (idx.shape[0], ),
-                                       device=dev)
-            cxgc.prof(
-                "train conv", "rgcn", lambda: train(conv, [
-                    feat, ptr, idx, edge_types, b["num_node_in_layer"][-2]
-                ], feat_label, optimizer, lossfn))
-        else:
-            cxgc.prof(
-                "train conv", "sage", lambda: train(conv, [
-                    feat, ptr, idx, b["num_node_in_layer"][-2]
-                ], feat_label, optimizer, lossfn))
+    if isinstance(conv, cxgc.MyGATConv):
+        cxgc.prof(
+            "train conv", "gat", lambda: train(conv, [
+                feat, ptr, idx, b["num_node_in_layer"][-2], b[
+                    "num_node_in_layer"][-1], idx.shape[0]
+            ], feat_label, optimizer, lossfn))
+    elif isinstance(conv, MyRGCNConv):
+        edge_types = torch.randint(0,
+                                   conv.num_rel, (idx.shape[0], ),
+                                   device=dev)
+        cxgc.prof(
+            "train conv", "rgcn", lambda: train(conv, [
+                feat, ptr, idx, edge_types, b["num_node_in_layer"][-2]
+            ], feat_label, optimizer, lossfn))
+    else:
+        cxgc.prof(
+            "train conv", "sage",
+            lambda: train(conv, [feat, ptr, idx, b["num_node_in_layer"][-2]],
+                          feat_label, optimizer, lossfn))
     torch.cuda.synchronize()
     # output = cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], feat.shape[-1],
     #                         cxgnncomp_backend.run_spmm_configurable,
     #                         [ptr, idx, feat, ptr.shape[0] - 1])
-    prof.export_chrome_trace("trace.json")
 
 
 class Batch():
@@ -85,22 +82,24 @@ class Batch():
 
 
 def test_model_training():
-    infeat = 256
+    cxgc.set_timers()
+    infeat = 384
     hiddenfeat = 256
     outfeat = 128
     num_layer = 3
     num_head = 4
     dev = torch.device("cuda:0")
 
-    dset = "arxiv"
-    feat, ptr, idx, b = cxgc.prepare_data_full_graph(dset,
-                                                     feat_len=infeat,
-                                                     num_head=1)
-    # feat, ptr, idx, b = cxgc.prepare_data_sampled_graph(
-    #     dset=dset,
-    #     feat_len=infeat,
-    #     num_head=1,  # for model training, there are matmul expanding the heads
-    #     num_seeds=1000)
+    # dset = "arxiv"
+    # feat, ptr, idx, b = cxgc.prepare_data_full_graph(dset,
+    #                                                  feat_len=infeat,
+    #                                                  num_head=1)
+    dset = "papers100M"
+    feat, ptr, idx, b = cxgc.prepare_data_sampled_graph(
+        dset=dset,
+        feat_len=infeat,
+        num_head=1,  # for model training, there are matmul expanding the heads
+        num_seeds=1000)
 
     # model = cxgc.GAT(infeat,
     #                  hiddenfeat,
@@ -121,18 +120,31 @@ def test_model_training():
     #                   config=None).to(dev)
     # model_name = "SAGE"
 
-    model = cxgc.GCN(infeat,
-                     hiddenfeat,
-                     outfeat,
-                     num_layer,
-                     dropout=0.5,
-                     graph_type="CSR_Layer",
-                     config=None).to(dev)
-    model_name = "GCN"
+    # model = cxgc.GCN(infeat,
+    #                  hiddenfeat,
+    #                  outfeat,
+    #                  num_layer,
+    #                  dropout=0.5,
+    #                  graph_type="CSR_Layer",
+    #                  config=None).to(dev)
+    # model_name = "GCN"
+
+    model = cxgc.RGCN(infeat,
+                      hiddenfeat,
+                      outfeat,
+                      num_layer,
+                      dropout=0.5,
+                      graph_type="CSR_Layer",
+                      config=None,
+                      num_rel=7,
+                      dataset_name=dset).to(dev)
+    model_name = "RGCN"
 
     feat_label = torch.randn([b["num_node_in_layer"][0], outfeat],
                              dtype=torch.float32,
                              device=dev)
+
+    print(b["num_edge_in_layer"])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
     lossfn = torch.nn.MSELoss()
@@ -144,5 +156,8 @@ def test_model_training():
 
 
 if __name__ == "__main__":
-    test_conv_training()
-    # test_model_training()
+    with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        # test_conv_training()
+        test_model_training()
+    # prof.export_chrome_trace("trace.json")
