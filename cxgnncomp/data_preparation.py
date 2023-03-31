@@ -58,11 +58,14 @@ def prepare_data_full_graph(
         return x, ptr, idx, batch
 
 
-def prepare_data_sampled_graph(dset,
-                               num_seeds,
-                               feat_len=128,
-                               num_head=1,
-                               fanouts=[10, 15, 20]):
+def prepare_data_sampled_graph(
+    dset,
+    num_seeds,
+    feat_len=128,
+    num_head=1,
+    fanouts=[10, 15, 20],
+    need_edge_index=False,
+):
     full_ptr, full_idx = cxgnndl.load_full_graph_structure(dset)
     full_ptr = torch.from_numpy(full_ptr)
     full_idx = torch.from_numpy(full_idx)
@@ -85,4 +88,14 @@ def prepare_data_sampled_graph(dset,
     batch["num_edge_in_layer"] = num_edge_in_layer
     batch["sub_to_full"] = input_nodes.cuda()
     print(ptr.shape, idx.shape, x.shape, batch["num_node_in_layer"])
-    return x, ptr, idx, batch
+    if need_edge_index:
+        edge_index = torch.stack([
+            idx,
+            torch.repeat_interleave(torch.arange(
+                0, ptr.shape[0] - 1, device="cuda"),
+                                    repeats=ptr[1:] - ptr[:-1])
+        ],
+                                 dim=0)
+        return x, ptr, idx, batch, edge_index
+    else:
+        return x, ptr, idx, batch

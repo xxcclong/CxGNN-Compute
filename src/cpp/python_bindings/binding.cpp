@@ -70,7 +70,10 @@ void init_spmm_multihead(py::module &m) {
         "");
 }
 
-void init_sddmm(py::module &m) { m.def("run_sddmm", &run_sddmm, ""); }
+void init_sddmm(py::module &m) {
+  m.def("run_sddmm", &run_sddmm, "");
+  m.def("run_sddmm_vertex_centric", &run_sddmm_vertex_centric, "");
+}
 
 void assertTensor(torch::Tensor &T, torch::ScalarType type) {
   assert(T.is_contiguous());
