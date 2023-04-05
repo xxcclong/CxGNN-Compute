@@ -54,7 +54,7 @@ Tensor run_sddmm_vertex_centric(Tensor ptr, Tensor idx, Tensor src_feat,
         output.data_ptr<float>(), num_node, feat_len, num_head, rpb, cpb, cpw,
         grid_map, block_map);
   } else {
-    ASSERTWITH("cpw must be 32, 64, 128 or 256", false);
+    ASSERTWITH(false, "cpw must be 32, 64, 128 or 256");
   }
   return output;
 }

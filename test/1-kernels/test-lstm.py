@@ -8,19 +8,20 @@ in_feat = 256
 def prepare_data():
     dset = "arxiv"
     num_head = 1
-    x, ptr, idx, b = cxgc.prepare_data_full_graph(
+    x, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
         dset,
         feat_len=in_feat,
         num_head=num_head,
+        need_edge_index=True,
     )
     # x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
     #                                                  feat_len=in_feat,
     #                                                  num_head=num_head,
     #                                                  num_seeds=1000)
-    return x, ptr, idx, b, num_head
+    return x, ptr, idx, b, num_head, edge_index
 
 
-x, ptr, idx, batch, num_head = prepare_data()
+x, ptr, idx, batch, num_head, edge_index = prepare_data()
 num_edge = idx.shape[0]
 num_center = ptr.shape[0] - 1
 deg = ptr[1:] - ptr[:-1]
@@ -104,7 +105,45 @@ def run_padded_seq():
     cxgc.prof("lstm", "padded", lambda: lstm_module(padded_seq, other))
 
 
-cxgc.prof("lstm", "arxiv", lambda: run_lstm(lstm_module, count))
+# cxgc.prof("lstm", "arxiv", lambda: run_lstm(lstm_module, count))
 # run_padded_seq()
 
 # run_lstm(lstm_module, count)
+
+import dgl.function as fn
+import dgl
+
+
+def lstm_dgl():
+
+    def _lstm_reducer(nodes):
+        """LSTM reducer
+        NOTE(zihao): lstm reducer with default schedule (degree bucketing)
+        is slow, we could accelerate this with degree padding in the future.
+        """
+        m = nodes.mailbox["m"]  # (B, L, D)
+        batch_size = m.shape[0]
+        # h = (
+        #     m.new_zeros((1, batch_size, self._in_src_feats)),
+        #     m.new_zeros((1, batch_size, self._in_src_feats)),
+        # )
+        _, (rst, _) = lstm_module(m, )
+        return {"neigh": rst.squeeze(0)}
+
+    num_src = batch["num_node_in_layer"][-1]
+    num_dst = batch["num_node_in_layer"][-2]
+    # dgl_graph = dgl.create_block(('csc', (ptr, idx, torch.tensor([]))),
+    #                              int(num_src), int(num_dst))
+    # print(dgl_graph.ntypes)
+    dgl_graph = dgl.graph((edge_index[0], edge_index[1]),
+                          num_nodes=num_src).to("cuda")
+    dgl_graph.ndata["h"] = x
+    msg_fn = fn.copy_src("h", "m")
+    # print(dgl_graph.ntypes)
+    dgl_graph.update_all(msg_fn, _lstm_reducer)
+
+    cxgc.prof("lstm", "dgl",
+              lambda: dgl_graph.update_all(msg_fn, _lstm_reducer))
+
+
+lstm_dgl()

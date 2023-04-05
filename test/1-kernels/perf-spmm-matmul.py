@@ -9,18 +9,19 @@ def prepare_data():
     infeat = 256
     num_head = 1
 
-    # dset = "arxiv"
-    # x, ptr, idx, b = cxgc.prepare_data_full_graph(
-    #     dset,
-    #     feat_len=infeat,
-    #     num_head=num_head,
-    # )
+    dset = "arxiv"
+    x, ptr, idx, b = cxgc.prepare_data_full_graph(
+        dset,
+        feat_len=infeat,
+        num_head=num_head,
+    )
 
-    dset = "papers100M"
-    x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
-                                                     feat_len=infeat,
-                                                     num_head=num_head,
-                                                     num_seeds=1000)
+    # dset = "papers100M"
+    # x, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
+    #                                                  feat_len=infeat,
+    #                                                  num_head=num_head,
+    #                                                  num_seeds=1000)
+
     return x, ptr, idx, b, num_head
 
 
