@@ -312,6 +312,46 @@ def test_dense_overhead():
             print("index select", t1 - t0, "mm", t2 - t1, "index add", t3 - t2)
 
 
+def test_sddmm_triton():
+    infeat = 128
+    num_head = 16
+    dev = torch.device("cuda:0")
+
+    dset = "arxiv"
+    feat, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
+        dset, feat_len=infeat, num_head=num_head, need_edge_index=True)
+    transposed_feat = torch.transpose(feat, 1, 2).contiguous()
+    dst_feat = torch.randn([ptr.shape[0] - 1, infeat], device=feat.device)
+    output = torch.zeros([idx.shape[0], num_head], device=feat.device)
+    num_edge = edge_index.shape[1]
+
+    # tmp_src = torch.arange(0, 1, device=dev)
+    # tmp_src_repeated = torch.repeat_interleave(tmp_src, 1024)
+    tmp_src_repeated = torch.zeros([1024], device=dev, dtype=torch.int64)
+    tmp_dst = edge_index[1][:tmp_src_repeated.shape[0]]
+    tmp_output = torch.zeros([tmp_src_repeated.shape[0], num_head], device=dev)
+    cxgnncomp_backend.run_sddmm(tmp_src_repeated, tmp_dst, feat, dst_feat,
+                                tmp_output, tmp_src_repeated.shape[0])
+    output_triton = cxgc.sddmm_dense(dst_feat, transposed_feat, tmp_dst,
+                                     tmp_src_repeated, tmp_dst.shape[0])
+    cxgc.compare(tmp_output, output_triton)
+    exit()
+
+    cxgnncomp_backend.run_sddmm(edge_index[0], edge_index[1], feat, dst_feat,
+                                output, edge_index.shape[1])
+    cxgc.sddmm_dense(dst_feat, transposed_feat, edge_index[1], edge_index[0],
+                     num_edge)
+
+    output_time = cxgc.prof(
+        "sddmm", "edge parallel",
+        lambda: cxgnncomp_backend.run_sddmm(edge_index[0], edge_index[
+            1], feat, dst_feat, output, edge_index.shape[1]))
+
+    cxgc.prof(
+        "sddmm", "dense", lambda: cxgc.sddmm_dense(
+            dst_feat, transposed_feat, edge_index[1], edge_index[0], num_edge))
+
+
 if __name__ == "__main__":
     # test_sddmm()
     # test_dense()
@@ -320,4 +360,5 @@ if __name__ == "__main__":
     # test_dense_mlp()
     # test_edge_mlp()
     # test_add()
-    test_dense_overhead()
+    # test_dense_overhead()
+    test_sddmm_triton()

@@ -9,7 +9,7 @@ from .timer import *
 from .typed_linear import TypedLinearE2EOP, TypedLinearS2EOP
 from .typed_linear import TypedLinearS2DMMAggrOP, TypedLinearS2DAggrMMOP, TypedLinearS2DSort, TypedLinearNaiveS2D
 from .typed_linear import TypedLinearS2DPushOP
-from .schedule import neighbor_grouping, partition_2d
+from .schedule import *
 
 # __all__ = ["SAGE", "GCN", "GAT", "MLP", "GIN", "RGCN_CSR_Layer", "MyGATConv", "MyGCNConv",
 # "MyRGCNConvNaive", "MyRGCNConvOpt1", "MyRGCNConvOpt2", "MySageConv", "MyGINConv"]

@@ -51,3 +51,23 @@ def partition_2d(ptr, idx, num_src, num_dst, num_parts=8):
     assert len(new_idx) == new_ptr[-1]
     return torch.from_numpy(numpy.array(new_ptr)).cuda(), torch.from_numpy(
         numpy.array(new_idx)).cuda()
+
+
+def reorder_by(ptr, idx, metric):
+    print("reorder_by: not reordering source nodes")
+    assert metric.shape[0] == ptr.shape[0] - 1
+    ptr = ptr.cpu().numpy()
+    num_src = torch.max(idx) + 1
+    idx = idx.cpu().numpy()
+    # new_indices = torch.empty([num_src])
+    # new_indices[metric] = torch.arange(metric.shape[0], device=metric.device)
+    new_ptr = [0]
+    new_idx = []
+    for i in range(len(ptr) - 1):
+        deg = ptr[metric[i] + 1] - ptr[metric[i]]
+        new_ptr.append(new_ptr[-1] + deg)
+        for j in range(ptr[metric[i]], ptr[metric[i] + 1]):
+            # new_idx.append(new_indices[idx[j]])
+            new_idx.append(idx[j])
+    return torch.from_numpy(numpy.array(new_ptr)), torch.from_numpy(
+        numpy.array(new_idx))
