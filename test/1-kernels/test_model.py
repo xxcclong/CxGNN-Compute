@@ -17,7 +17,7 @@ def train(model, params, label, optimizer, lossfn):
 
 def test_conv_training():
     infeat = 256
-    outfeat = 256
+    outfeat = 32
     num_head = 4
     dev = torch.device("cuda:0")
 
@@ -156,8 +156,8 @@ def test_model_training():
 
 
 if __name__ == "__main__":
-    with profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-        # test_conv_training()
-        test_model_training()
+    # with profile(
+    #         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+    test_conv_training()
+    test_model_training()
     # prof.export_chrome_trace("trace.json")

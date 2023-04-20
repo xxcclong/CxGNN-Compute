@@ -20,7 +20,7 @@ def validate(cpw, rpb, cpb, block_size, feat_len):
 
 class Tuner():
 
-    def __init__(self):
+    def __init__(self, lazy=False):
         self.cache = {}
         self.cpws = [32, 64, 128, 256, 512, 1024]
         self.rpbs = [1, 2, 4, 8, 16, 32]
@@ -29,6 +29,7 @@ class Tuner():
         self.grid_ys = [1, 2, 4, 8, 16, 32]
         self.block_maps = [0, 1]
         self.grid_maps = [0, 1]
+        self.lazy = lazy
 
     def hash(
         self,
@@ -38,12 +39,15 @@ class Tuner():
         func,
         run_param,
     ):
-        s = f"{num_node}_{num_edge}_{feat_len}_{func.__name__}"
-        for item in run_param:
-            if isinstance(item, torch.Tensor):
-                s += f"_{item.shape}"
-            else:
-                s += f"_{str(item)}"
+        if self.lazy:
+            s = f"{func.__name__}_lazy"
+        else:
+            s = f"{num_node}_{num_edge}_{feat_len}_{func.__name__}"
+            for item in run_param:
+                if isinstance(item, torch.Tensor):
+                    s += f"_{item.shape}"
+                else:
+                    s += f"_{str(item)}"
         return s
 
     def tune_graph(self,
@@ -53,12 +57,26 @@ class Tuner():
                    func,
                    run_param,
                    patience=50):
+        num_node = int(num_node)
+        num_edge = int(num_edge)
+        feat_len = int(feat_len)
         hash_str = self.hash(num_node, num_edge, feat_len, func, run_param)
+        ceil_feat_len = (feat_len + 31) // 32 * 32
         if hash_str in self.cache:
-            output = func(*run_param, *self.cache[hash_str])
+            if self.lazy:
+                grid_x, grid_y, block_x, block_y, rpb, cpb, cpw, grid_map, block_map = self.cache[
+                    hash_str]
+                num_grid = num_node * ceil_feat_len // rpb // cpb
+                print(grid_x, type(grid_x))
+                grid_x = (num_grid + grid_y - 1) // grid_y
+                grid_x = (grid_x + (feat_len // rpb) -
+                          1) // (feat_len // rpb) * (feat_len // rpb)
+                output = func(*run_param, grid_x, grid_y, block_x, block_y,
+                              rpb, cpb, cpw, grid_map, block_map)
+            else:
+                output = func(*run_param, *self.cache[hash_str])
             return output
 
-        ceil_feat_len = (feat_len + 31) // 32 * 32
         params = []
         for rpb in self.rpbs:
             for cpb in self.cpbs:

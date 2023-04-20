@@ -149,11 +149,12 @@ def typed_matmul_kernel(
     b_ptr = b_ptr + rel * K * N
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk +
                       offs_bn[None, :] * stride_bn)
+    b_mask = (offs_k[:, None] < K) & (offs_bn[None, :] < N)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, K, BLOCK_SIZE_K):
         a = tl.load(a_ptrs, mask=a_mask)
-        b = tl.load(b_ptrs)
+        b = tl.load(b_ptrs, mask=b_mask)
         accumulator += tl.dot(a, b)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
@@ -238,24 +239,24 @@ def typed_matmul_kernel(
             },
             num_stages=4,
             num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 32,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 32,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=5,
-            num_warps=2),
+        # triton.Config( # these lead to error
+        #     {
+        #         'BLOCK_SIZE_M': 128,
+        #         'BLOCK_SIZE_N': 32,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=4,
+        #     num_warps=4),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 64,
+        #         'BLOCK_SIZE_N': 32,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=5,
+        #     num_warps=2),
         triton.Config(
             {
                 'BLOCK_SIZE_M': 32,
@@ -315,11 +316,12 @@ def typed_matmul_kernel_single_index(
     b_ptr = b_ptr + rel * K * N
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk +
                       offs_bn[None, :] * stride_bn)
+    b_mask = (offs_k[:, None] < K) & (offs_bn[None, :] < N)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, K, BLOCK_SIZE_K):
         a = tl.load(a_ptrs, mask=a_mask)
-        b = tl.load(b_ptrs)
+        b = tl.load(b_ptrs, mask=b_mask)
         accumulator += tl.dot(a, b)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
@@ -479,11 +481,12 @@ def typed_matmul_kernel_single_index_seq_output(
     b_ptr = b_ptr + rel * K * N
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk +
                       offs_bn[None, :] * stride_bn)
+    b_mask = (offs_k[:, None] < K) & (offs_bn[None, :] < N)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, K, BLOCK_SIZE_K):
         a = tl.load(a_ptrs, mask=a_mask)
-        b = tl.load(b_ptrs)
+        b = tl.load(b_ptrs, mask=b_mask)
         accumulator += tl.dot(a, b)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
@@ -637,11 +640,12 @@ def typed_matmul_kernel_no_index(
     b_ptr = b_ptr + rel * K * N
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk +
                       offs_bn[None, :] * stride_bn)
+    b_mask = (offs_k[:, None] < K) & (offs_bn[None, :] < N)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
     for k in range(0, K, BLOCK_SIZE_K):
         a = tl.load(a_ptrs, mask=a_mask)
-        b = tl.load(b_ptrs)
+        b = tl.load(b_ptrs, mask=b_mask)
         accumulator += tl.dot(a, b)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
@@ -661,6 +665,14 @@ def typed_matmul(a,
                  src_idx=None,
                  dst_idx=None,
                  seq_output=False):
+    # print(a.shape, b.shape, rel.shape, num_valid_item)
+    # if src_idx is not None:
+    #     print(src_idx.shape)
+    #     print(torch.max(src_idx), torch.min(src_idx))
+    # if dst_idx is not None:
+    #     print(dst_idx.shape)
+    #     print(torch.max(dst_idx), torch.min(dst_idx))
+
     assert a.shape[1] == b.shape[1], "incompatible dimensions"
     assert a.is_contiguous(), "matrix A must be contiguous"
     assert b.is_contiguous(), "matrix B must be contiguous"
