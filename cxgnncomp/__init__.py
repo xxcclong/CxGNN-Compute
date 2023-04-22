@@ -10,6 +10,7 @@ from .typed_linear import TypedLinearE2EOP, TypedLinearS2EOP
 from .typed_linear import TypedLinearS2DMMAggrOP, TypedLinearS2DAggrMMOP, TypedLinearS2DSort, TypedLinearNaiveS2D
 from .typed_linear import TypedLinearS2DPushOP
 from .schedule import *
+from .neighbor_lstm import NeighborLstmOP, NeighborLstmPadOP
 
 # __all__ = ["SAGE", "GCN", "GAT", "MLP", "GIN", "RGCN_CSR_Layer", "MyGATConv", "MyGCNConv",
 # "MyRGCNConvNaive", "MyRGCNConvOpt1", "MyRGCNConvOpt2", "MySageConv", "MyGINConv"]

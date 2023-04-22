@@ -73,8 +73,24 @@ def run_lstm(module, count):
     print("num_call", num_call)
 
 
+# cxgc.prof("lstm", "arxiv", lambda: run_lstm(lstm_module, count))
+# reorder the graph to group the same-degree nodes together
+metric = torch.argsort(deg, descending=False)
+ptr, idx = cxgc.reorder_by(ptr, idx, metric)
+cxgc.prof("lstm neighbor op", "arxiv",
+          lambda: cxgc.NeighborLstmOP(lstm_module, ptr, idx, x, count))
+cxgc.prof(
+    "lstm neighbor op", "arxiv",
+    lambda: cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count, 64, 10000))
+output1 = cxgc.NeighborLstmOP(lstm_module, ptr, idx, x, count)
+output2 = cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count, 64, 10000)
+cxgc.compare(output1, output2)
+exit()
+
+
 def run_lstm_one_op():
     # input: [batch, seqlen, hidden]
+    # assuming the seq length is 20
     input_data = torch.randn(
         [num_center, 20, in_feat],
         device=torch.device(0),
@@ -85,7 +101,8 @@ def run_lstm_one_op():
     lstm_module.reset_parameters()
     _, (rst, _) = lstm_module(input_data, other)
 
-    cxgc.prof("lstm", "", lambda: lstm_module(input_data, other))
+    cxgc.prof("lstm one NN op, seq==20", "",
+              lambda: lstm_module(input_data, other))
 
 
 '''
@@ -105,7 +122,6 @@ def run_padded_seq():
     cxgc.prof("lstm", "padded", lambda: lstm_module(padded_seq, other))
 
 
-# cxgc.prof("lstm", "arxiv", lambda: run_lstm(lstm_module, count))
 # run_padded_seq()
 
 # run_lstm(lstm_module, count)

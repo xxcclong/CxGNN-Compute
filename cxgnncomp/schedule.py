@@ -1,5 +1,6 @@
 import torch
 import numpy
+import time
 
 
 def neighbor_grouping(ptr, neighbor_thres=32):
@@ -53,21 +54,35 @@ def partition_2d(ptr, idx, num_src, num_dst, num_parts=8):
         numpy.array(new_idx)).cuda()
 
 
+'''
+Assuming the dst and src are not representing the same set of nodes
+e.g.:
+dst: 0 0 0 1 1 2 2 2 2
+src: a b c d e f g h i
+metric: 2 0 1
+new_dst: 2 2 2 2 0 0 0 1 1
+new_src: f g h i a b c d e 
+'''
+
+
 def reorder_by(ptr, idx, metric):
+    t0 = time.time()
+    device = ptr.device
     print("reorder_by: not reordering source nodes")
     assert metric.shape[0] == ptr.shape[0] - 1
     ptr = ptr.cpu().numpy()
     num_src = torch.max(idx) + 1
     idx = idx.cpu().numpy()
+    metric = metric.cpu().numpy()
     # new_indices = torch.empty([num_src])
     # new_indices[metric] = torch.arange(metric.shape[0], device=metric.device)
     new_ptr = [0]
     new_idx = []
     for i in range(len(ptr) - 1):
-        deg = ptr[metric[i] + 1] - ptr[metric[i]]
+        curr_node_id = metric[i]
+        deg = ptr[curr_node_id + 1] - ptr[curr_node_id]
         new_ptr.append(new_ptr[-1] + deg)
-        for j in range(ptr[metric[i]], ptr[metric[i] + 1]):
-            # new_idx.append(new_indices[idx[j]])
-            new_idx.append(idx[j])
-    return torch.from_numpy(numpy.array(new_ptr)), torch.from_numpy(
-        numpy.array(new_idx))
+        new_idx += idx[ptr[curr_node_id]:ptr[curr_node_id + 1]].tolist()
+    print("reorder_by: time elapsed: ", time.time() - t0)
+    return torch.from_numpy(numpy.array(new_ptr)).to(device), torch.from_numpy(
+        numpy.array(new_idx)).to(device)

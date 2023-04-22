@@ -1,12 +1,16 @@
 import triton
+import torch
 
 
 def compare(output1, output2):
-    if triton.testing.allclose(output1, output2):
-        print("CORRECT: Triton and Torch match")
+    if torch.allclose(output1, output2, atol=1e-2, rtol=1e-2):
+        print("CORRECT: match")
     else:
-        print("ERROR: Triton and Torch differ")
-        print(output1[0], output2[0])
+        print("ERROR: differ\n==========")
+        mask = output1 != output2
+        print(torch.where(output1 != output2))
+        print(output1[mask][:100], output2[mask][:100])
+        print("ERROR: differ\n==========")
         # exit()
 
 
