@@ -8,87 +8,87 @@ import time
 
 @triton.autotune(
     configs=[
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 256,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=3,
-            num_warps=8),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 256,
-                'BLOCK_SIZE_N': 128,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=3,
-            num_warps=8),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 256,
-                'BLOCK_SIZE_N': 64,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 256,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 128,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 64,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 128,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 128,
-                'BLOCK_SIZE_N': 32,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=4,
-            num_warps=4),
-        triton.Config(
-            {
-                'BLOCK_SIZE_M': 64,
-                'BLOCK_SIZE_N': 32,
-                'BLOCK_SIZE_K': 32,
-                'GROUP_SIZE_M': 8
-            },
-            num_stages=5,
-            num_warps=2),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 128,
+        #         'BLOCK_SIZE_N': 256,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=3,
+        #     num_warps=8),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 256,
+        #         'BLOCK_SIZE_N': 128,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=3,
+        #     num_warps=8),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 256,
+        #         'BLOCK_SIZE_N': 64,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=4,
+        #     num_warps=4),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 64,
+        #         'BLOCK_SIZE_N': 256,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=4,
+        #     num_warps=4),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 128,
+        #         'BLOCK_SIZE_N': 128,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=4,
+        #     num_warps=4),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 128,
+        #         'BLOCK_SIZE_N': 64,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=4,
+        #     num_warps=4),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 64,
+        #         'BLOCK_SIZE_N': 128,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=4,
+        #     num_warps=4),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 128,
+        #         'BLOCK_SIZE_N': 32,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=4,
+        #     num_warps=4),
+        # triton.Config(
+        #     {
+        #         'BLOCK_SIZE_M': 64,
+        #         'BLOCK_SIZE_N': 32,
+        #         'BLOCK_SIZE_K': 32,
+        #         'GROUP_SIZE_M': 8
+        #     },
+        #     num_stages=5,
+        #     num_warps=2),
         triton.Config(
             {
                 'BLOCK_SIZE_M': 32,
@@ -106,8 +106,8 @@ def sddmm_kernel(
     a_ptr,
     b_ptr,
     c_ptr,
-    src_index_ptr,
     dst_index_ptr,
+    src_index_ptr,
     M,
     N,
     K,
@@ -138,7 +138,9 @@ def sddmm_kernel(
     offs_am_index = tl.load(dst_index_ptr + offs_am, mask=offs_am < M)
 
     # load src
-    src_id = tl.load(src_index_ptr + pid_m)
+    src_id = tl.load(
+        src_index_ptr + pid_m * BLOCK_SIZE_M
+    )  # assuming src index array has same shape with dst index array
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
 
     offs_k = tl.arange(0, BLOCK_SIZE_K)
@@ -169,6 +171,7 @@ def sddmm_kernel(
 
 
 def sddmm_dense(dst_feat_mat, src_feat_mat, dst_index, src_index, num_edge):
+    assert dst_feat_mat.is_cuda and src_feat_mat.is_cuda and dst_index.is_cuda and src_index.is_cuda, f"{dst_feat_mat.is_cuda}, {src_feat_mat.is_cuda}, {dst_index.is_cuda}, {src_index.is_cuda}"
     assert dst_feat_mat.is_contiguous(), "matrix A must be contiguous"
     assert src_feat_mat.is_contiguous(), "matrix B must be contiguous"
     assert len(src_feat_mat.shape) == 3  # num_src, feat, head
@@ -187,8 +190,8 @@ def sddmm_dense(dst_feat_mat, src_feat_mat, dst_index, src_index, num_edge):
         dst_feat_mat,
         src_feat_mat,
         output_mat,
-        src_index,
         dst_index,
+        src_index,
         M,
         N,
         K,

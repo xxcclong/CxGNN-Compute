@@ -45,6 +45,8 @@ def prepare_data_full_graph(
     batch = {}
     batch["num_node_in_layer"] = torch.tensor([ptr.shape[0] - 1] * 4)
     batch["num_edge_in_layer"] = torch.tensor([idx.shape[0]] * 4)
+    print("After loading full graph structure...")
+    print(f"num_edge {idx.shape[0]} num_center {ptr.shape[0] - 1}")
     if need_edge_index:
         edge_index = torch.stack([
             idx,

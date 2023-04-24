@@ -3,14 +3,17 @@ import torch
 
 
 def compare(output1, output2):
+    assert output1.shape == output2.shape, f"{output1.shape} != {output2.shape}"
     if torch.allclose(output1, output2, atol=1e-2, rtol=1e-2):
         print("CORRECT: match")
     else:
         print("ERROR: differ\n==========")
-        mask = output1 != output2
-        print(torch.where(output1 != output2))
+        mask = ~torch.isclose(output1, output2, atol=1e-2, rtol=1e-2)
+        print(torch.where(mask))
         print(output1[mask][:100], output2[mask][:100])
-        print("ERROR: differ\n==========")
+        print(
+            f"ERROR: differ ratio: {torch.sum(mask) / torch.numel(mask)}\n=========="
+        )
         # exit()
 
 

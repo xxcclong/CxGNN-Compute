@@ -312,6 +312,60 @@ def test_dense_overhead():
             print("index select", t1 - t0, "mm", t2 - t1, "index add", t3 - t2)
 
 
+def process_edge_index(edge_index, block=256):
+    src = edge_index[0]
+    dst = edge_index[1]
+    sorted_src, indices = torch.sort(src)
+    sorted_dst = dst[indices]
+    num_edge = edge_index.shape[1]
+    num_src_node = torch.max(src).item() + 1
+    num_dst_node = torch.max(sorted_dst).item() + 1
+    src_deg = torch.bincount(src)
+    new_src_deg = (src_deg + block - 1) // block * block
+    new_num_edge = torch.sum(new_src_deg).item()
+    src_deg = src_deg.cpu()
+    new_src_deg = new_src_deg.cpu()
+    print(f"padded edge num {new_num_edge}, original edge num {num_edge}")
+    new_dst = torch.ones([new_num_edge], dtype=torch.int64) * -1
+    new_src = torch.empty([new_num_edge], dtype=torch.int64)
+    acc_padded = 0
+    acc = 0
+    edge_positions = torch.empty([num_edge], dtype=torch.int64)
+    for i in range(num_src_node):
+        new_src[acc_padded:acc_padded + new_src_deg[i]] = i
+        new_dst[acc_padded:acc_padded + src_deg[i]] = sorted_dst[acc:acc +
+                                                                 src_deg[i]]
+        edge_positions[acc:acc + src_deg[i]] = torch.arange(
+            acc_padded, acc_padded + src_deg[i])
+        acc_padded += new_src_deg[i]
+        acc += src_deg[i]
+    assert acc == num_edge
+    assert acc_padded == new_num_edge
+    new_dst[new_dst == -1] = num_dst_node
+    return torch.stack([new_src, new_dst]).to(
+        edge_index.device), edge_positions.to(edge_index.device), torch.stack(
+            [sorted_src, sorted_dst]).to(edge_index.device)
+
+
+def test_process_edge_index():
+    src = torch.tensor([3, 3, 1, 1, 1, 0, 0, 2, 2])
+    dst = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7, 8])
+    edge_index = torch.stack([src, dst])
+    output, edge_pos, sorted_output = process_edge_index(edge_index, block=4)
+    print(output)
+    print(sorted_output)
+
+
+def show_padding_overhead(src):
+    src_deg = torch.bincount(src)
+    for i in range(32, 257, 32):
+        new_src_deg = (src_deg + i - 1) // i * i
+        new_num_edge = torch.sum(new_src_deg).item()
+        print(
+            f"block size {i}, padded edge num {new_num_edge}, original edge num {src.shape[0]}"
+        )
+
+
 def test_sddmm_triton():
     infeat = 128
     num_head = 16
@@ -321,26 +375,47 @@ def test_sddmm_triton():
     feat, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
         dset, feat_len=infeat, num_head=num_head, need_edge_index=True)
     transposed_feat = torch.transpose(feat, 1, 2).contiguous()
+    transposed_feat = torch.cat([
+        transposed_feat,
+        torch.zeros([1, transposed_feat.shape[1], transposed_feat.shape[2]],
+                    device=dev)
+    ],
+                                dim=0).contiguous()
+    print(transposed_feat.shape)
     dst_feat = torch.randn([ptr.shape[0] - 1, infeat], device=feat.device)
+    dst_feat = torch.cat(
+        [dst_feat, torch.zeros([1, infeat], device=dev)], dim=0).contiguous()
     output = torch.zeros([idx.shape[0], num_head], device=feat.device)
     num_edge = edge_index.shape[1]
 
     # tmp_src = torch.arange(0, 1, device=dev)
     # tmp_src_repeated = torch.repeat_interleave(tmp_src, 1024)
-    tmp_src_repeated = torch.zeros([1024], device=dev, dtype=torch.int64)
+    # tmp_src_repeated = torch.zeros([1024], device=dev, dtype=torch.int64)
+    tmp_src_repeated = torch.repeat_interleave(
+        torch.arange(0, 10, device=feat.device), 256)
+    print(tmp_src_repeated)
     tmp_dst = edge_index[1][:tmp_src_repeated.shape[0]]
     tmp_output = torch.zeros([tmp_src_repeated.shape[0], num_head], device=dev)
     cxgnncomp_backend.run_sddmm(tmp_src_repeated, tmp_dst, feat, dst_feat,
                                 tmp_output, tmp_src_repeated.shape[0])
     output_triton = cxgc.sddmm_dense(dst_feat, transposed_feat, tmp_dst,
                                      tmp_src_repeated, tmp_dst.shape[0])
+    print(output_triton.shape)
     cxgc.compare(tmp_output, output_triton)
-    exit()
+    # exit()
 
-    cxgnncomp_backend.run_sddmm(edge_index[0], edge_index[1], feat, dst_feat,
-                                output, edge_index.shape[1])
-    cxgc.sddmm_dense(dst_feat, transposed_feat, edge_index[1], edge_index[0],
-                     num_edge)
+    show_padding_overhead(src=edge_index[0])
+
+    new_edge_index, edge_pos, sorted_edge_index = process_edge_index(
+        edge_index, block=32)
+
+    cxgnncomp_backend.run_sddmm(sorted_edge_index[0], sorted_edge_index[1],
+                                feat, dst_feat, output,
+                                sorted_edge_index.shape[1])
+    output2 = cxgc.sddmm_dense(dst_feat, transposed_feat, new_edge_index[1],
+                               new_edge_index[0],
+                               new_edge_index.shape[1])[edge_pos]
+    cxgc.compare(output, output2)
 
     output_time = cxgc.prof(
         "sddmm", "edge parallel",
@@ -348,8 +423,9 @@ def test_sddmm_triton():
             1], feat, dst_feat, output, edge_index.shape[1]))
 
     cxgc.prof(
-        "sddmm", "dense", lambda: cxgc.sddmm_dense(
-            dst_feat, transposed_feat, edge_index[1], edge_index[0], num_edge))
+        "sddmm", "dense",
+        lambda: cxgc.sddmm_dense(dst_feat, transposed_feat, new_edge_index[
+            1], new_edge_index[0], new_edge_index.shape[1])[edge_pos])
 
 
 if __name__ == "__main__":
@@ -361,4 +437,5 @@ if __name__ == "__main__":
     # test_edge_mlp()
     # test_add()
     # test_dense_overhead()
+    test_process_edge_index()
     test_sddmm_triton()
