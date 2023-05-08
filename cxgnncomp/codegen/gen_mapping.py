@@ -56,7 +56,9 @@ class Tuner():
                    feat_len,
                    func,
                    run_param,
-                   patience=50):
+                   patience=50,
+                   verbose=False,
+                   rettime=False):
         num_node = int(num_node)
         num_edge = int(num_edge)
         feat_len = int(feat_len)
@@ -111,12 +113,15 @@ class Tuner():
                                         (grid_x, grid_y, block_x, block_y, rpb,
                                          cpb, cpw, grid_map, block_map))
         mmin = 1e9
+        mmax = 0
         best_config = None
 
         cnt = 0
         random.seed(233)
         random.shuffle(params)
 
+        if rettime:
+            ans = []
         t0 = time.time()
         no_impv = 0
         for param in params:
@@ -128,8 +133,13 @@ class Tuner():
                 mmin = res[1]
                 best_config = param
                 no_impv = 0
+                if verbose:
+                    print(f"step {cnt} {res[1]}")
+                if rettime:
+                    ans.append(mmin)
             else:
                 no_impv += 1
+                mmax = max(mmax, res[1])
             if patience > 0 and no_impv > patience:
                 break
             if cnt % 1000 == 0 and cnt != 0:
@@ -137,12 +147,16 @@ class Tuner():
                 print(f"progress: {cnt}/{len(params)} {time.time() - t0}")
             cnt += 1
         print("Tuning finish with patience", patience, "tune time",
-              time.time() - t0, f"trial-num {cnt}", "best", mmin,
-              mmin / num_edge, best_config)
+              time.time() - t0, f"trial-num {cnt}", "best", mmin, "worst",
+              mmax, mmin / num_edge, best_config)
         assert best_config is not None
         self.cache[hash_str] = best_config
         output = func(*run_param, *best_config)
-        return output
+
+        if rettime:
+            return ans
+        else:
+            return output
 
     # int32 version
     # for param in params:
