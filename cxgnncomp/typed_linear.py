@@ -21,6 +21,13 @@ def TypedLinearNaiveS2D(x, weights, types, src, dst, num_center, num_edge):
     return output
 
 
+def SelectMMS2EOP(x, weights, idx, types):
+    output = []
+    for i in range(weights.shape[0]):
+        output.append(torch.mm(x[idx[types == i]], weights[i]))
+    return output
+
+
 def TypedLinearS2DPushOP(x, weights, types, src, dst, num_type, num_center,
                          num_edge):
     torch.cuda.synchronize()
@@ -65,23 +72,34 @@ class TypedLinearE2EOP(torch.autograd.Function):
     # x: [E, dim]
 
     @staticmethod
-    def forward(ctx, x, weights, types, preprocessed=False, count=None):
-        if preprocessed:
-            return typed_matmul(x, weights, types, x.shape[0])
-        thres = 256
+    def preprocess(weights, types, thres):
         num_rel = weights.shape[0]
         num_item = types.shape[0]
-        if count is None:
-            count = torch.bincount(types)
-        else:
-            count = count.to(x.device)
+        count = torch.bincount(types)
         new_types = torch.empty([types.shape[0] + num_rel * (thres - 1)],
-                                device=x.device,
+                                device=weights.device,
                                 dtype=types.dtype)
         new_types[:types.shape[0]] = types
         cxgnncomp_backend.pad_rel(new_types, count, thres, num_rel,
                                   types.shape[0])
         sorted_types, indices = torch.sort(new_types)
+        return [sorted_types, num_item, indices]
+
+    @staticmethod
+    def forward(ctx,
+                x,
+                weights,
+                types,
+                preprocessed=[],
+                thres=256,
+                count=None):
+        if len(preprocessed) == 3:
+            # return typed_matmul(x, weights, types, x.shape[0])
+            sorted_types, num_item, indices = preprocessed
+        else:
+            sorted_types, num_item, indices = TypedLinearE2EOP.preprocess(
+                weights, types, thres)
+        # print(torch.max(indices), x.shape, sorted_types.shape, indices.shape)
         output = typed_matmul(x, weights, sorted_types, num_item, indices)
         ctx.save_for_backward(x, weights, types, indices, sorted_types)
         return output[:num_item]
@@ -106,42 +124,45 @@ class TypedLinearS2EOP(torch.autograd.Function):
     # x: [Src, dim]
 
     @staticmethod
-    def forward(ctx,
-                x,
-                weights,
-                types,
-                src_idx,
-                preprocessed=False,
-                count=None):
-        ctx.save_for_backward(x, weights, types, src_idx)
-        if preprocessed:
-            return typed_matmul(x, weights, types, src_idx, types.shape[0])
-        thres = 256
+    def preprocess(weights, types, src_idx, thres):
         num_rel = weights.shape[0]
         num_item = types.shape[0]
-        if count is None:
-            count = torch.bincount(types)
-        else:
-            count = count.to(x.device)
+        count = torch.bincount(types)
         new_types = torch.empty([types.shape[0] + num_rel * (thres - 1)],
-                                device=x.device,
+                                device=weights.device,
                                 dtype=types.dtype)
         new_types[:types.shape[0]] = types
         new_src_idx = torch.empty([src_idx.shape[0] + num_rel * (thres - 1)],
-                                  device=x.device,
+                                  device=weights.device,
                                   dtype=src_idx.dtype)
         new_src_idx[:src_idx.shape[0]] = src_idx
         cxgnncomp_backend.pad_rel_idx(new_types, new_src_idx, count, thres,
                                       num_rel, types.shape[0])
         sorted_types, indices = torch.sort(new_types)
+        return [sorted_types, num_item, new_src_idx, indices]
+
+    @staticmethod
+    def forward(ctx,
+                x,
+                weights,
+                types,
+                src_idx,
+                preprocessed=[],
+                thres=256,
+                count=None):
+        ctx.save_for_backward(x, weights, types, src_idx)
+        if len(preprocessed) == 4:
+            sorted_types, num_item, new_src_idx, indices = preprocessed
+        else:
+            sorted_types, num_item, new_src_idx, indices = TypedLinearS2EOP.preprocess(
+                x, weights, types, src_idx, thres)
         output = typed_matmul(
             x,
             weights,
             sorted_types,
-            num_item,
+            num_item,  # FIXME: num_item may be incorrect
             new_src_idx[indices],
-            indices,
-        )
+            indices)
         return output[:num_item]
 
     @staticmethod
