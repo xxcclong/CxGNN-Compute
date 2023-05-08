@@ -86,3 +86,42 @@ def reorder_by(ptr, idx, metric):
     print("reorder_by: time elapsed: ", time.time() - t0)
     return torch.from_numpy(numpy.array(new_ptr)).to(device), torch.from_numpy(
         numpy.array(new_idx)).to(device)
+
+
+def remove_from_graph(ptr, idx, remove_flag):
+    t0 = time.time()
+    device = ptr.device
+    ptr = ptr.cpu().numpy()
+    idx = idx.cpu().numpy()
+    remove_flag = remove_flag.cpu().numpy()
+    new_ptr = [0]
+    new_idx = []
+    for i in range(len(ptr) - 1):
+        if not remove_flag[i]:
+            deg = ptr[i + 1] - ptr[i]
+            new_ptr.append(new_ptr[-1] + deg)
+            new_idx += idx[ptr[i]:ptr[i + 1]].tolist()
+    print("remove: time elapsed: ", time.time() - t0)
+    return torch.from_numpy(numpy.array(new_ptr)).to(device), torch.from_numpy(
+        numpy.array(new_idx)).to(device)
+
+
+def remove_from_graph_by_edge(ptr, idx, remove_flag):
+    t0 = time.time()
+    device = ptr.device
+    ptr = ptr.cpu().numpy()
+    idx = idx.cpu().numpy()
+    remove_flag = remove_flag.cpu().numpy()
+    new_ptr = [0]
+    new_idx = []
+    for i in range(len(ptr) - 1):
+        deg = 0
+        for j in range(ptr[i], ptr[i + 1]):
+            if not remove_flag[idx[j]]:
+                new_idx.append(idx[j])
+                deg += 1
+        if deg > 0:
+            new_ptr.append(new_ptr[-1] + deg)
+    print("remove: time elapsed: ", time.time() - t0)
+    return torch.from_numpy(numpy.array(new_ptr)).to(device), torch.from_numpy(
+        numpy.array(new_idx)).to(device)

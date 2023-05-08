@@ -9,6 +9,7 @@ from .timer import *
 from .typed_linear import TypedLinearE2EOP, TypedLinearS2EOP
 from .typed_linear import TypedLinearS2DMMAggrOP, TypedLinearS2DAggrMMOP, TypedLinearS2DSort, TypedLinearNaiveS2D
 from .typed_linear import TypedLinearS2DPushOP
+from .typed_linear import SelectMMS2EOP
 from .schedule import *
 from .neighbor_lstm import NeighborLstmOP, NeighborLstmPadOP
 

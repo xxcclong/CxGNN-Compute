@@ -97,6 +97,11 @@ def batching_lstm():
     torch.manual_seed(0)
     x, ptr, idx, b, num_head = prepare_data()
     deg = ptr[1:] - ptr[:-1]
+    remove_flag = deg > 5000
+    print(deg[remove_flag])
+    ptr, idx = cxgc.remove_from_graph(ptr, idx, remove_flag)
+    deg = ptr[1:] - ptr[:-1]
+    print(torch.max(deg))
     count = torch.bincount(deg).cpu()
     in_feat = x.shape[-1]
     lstm_module = torch.nn.LSTM(in_feat, in_feat, batch_first=True).cuda()
@@ -105,14 +110,39 @@ def batching_lstm():
     ptr, idx = cxgc.reorder_by(ptr, idx, metric)
     # cxgc.prof("lstm neighbor op", "padding",
     #           lambda: cxgc.NeighborLstmOP(lstm_module, ptr, idx, x, count))
-    for num_center_in_batch in [
-            1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
-            16384, 32768, 65536
-    ]:
+    # for num_center_in_batch in [
+    #         1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
+    #         16384, 32768, 65536
+    # ]:
+
+    new_tensor = torch.randn([3, 13161, x.shape[-1]], device=x.device)
+
+    s1 = torch.cuda.Stream()
+    s2 = torch.cuda.Stream()
+    for num_center_in_batch in [256]:
+        for _ in range(3):
+            with torch.cuda.stream(s1):
+                cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count,
+                                       num_center_in_batch, 50000)
+            with torch.cuda.stream(s2):
+                lstm_module(new_tensor)
+        torch.cuda.synchronize()
+        t0 = time.time()
+        for _ in range(5):
+            with torch.cuda.stream(s2):
+                lstm_module(new_tensor)
+            with torch.cuda.stream(s1):
+                cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count,
+                                       num_center_in_batch, 50000)
+            torch.cuda.synchronize()
+        # torch.cuda.synchronize()
+        print(f"batch size {num_center_in_batch} time {(time.time() - t0)/5}")
         cxgc.prof(
             "lstm neighbor op",
             f"padding {num_center_in_batch}", lambda: cxgc.NeighborLstmPadOP(
                 lstm_module, ptr, idx, x, count, num_center_in_batch, 50000))
+        cxgc.prof("lstm neighbor op2", f"padding {num_center_in_batch}",
+                  lambda: lstm_module(new_tensor))
 
 
 # batching_rgcn()

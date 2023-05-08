@@ -1,4 +1,5 @@
 from .codegen.util import prof
+import time
 import torch
 
 
@@ -54,7 +55,14 @@ def NeighborLstmPadOP(module, ptr, idx, feat, deg_count, num_center_in_batch,
                                 feat, 0, comp_idx).view(num2, deg2, -1)
                     src_cnt += num2 * deg2
                     tmp_dst_cnt += num2
+            # torch.cuda.synchronize()
+            # t0 = time.time()
             tmp = module(comp_in, None)
+            # torch.cuda.synchronize()
+            # t1 = time.time()
+            # print(
+            #     f"time {t1 - t0} for {accumulated_dst} nodes, deg {max_deg}, edges {accumulated_src}, {(t1 - t0) / accumulated_src}, comp_in {comp_in.shape}"
+            # )
             # print(tmp[0].shape, dst_cnt, output.shape)
             output[dst_cnt:dst_cnt + accumulated_dst] = tmp[0].view(
                 accumulated_dst, max_deg, -1).sum(1)
