@@ -18,11 +18,9 @@ def prepare_data():
     return x, ptr, idx, b, num_head, edge_index
 
 
-x, ptr, idx, b, num_head, edge_index = prepare_data()
-deg = ptr[1:] - ptr[:-1]
-
-
 def show_tune_stages_gcn():
+    x, ptr, idx, b, num_head, edge_index = prepare_data()
+    deg = ptr[1:] - ptr[:-1]
     num_edge = idx.shape[0]
     ans = []
     # stage 1: vertex centric
@@ -80,6 +78,8 @@ def show_tune_stages_gcn():
 
 
 def show_tune_stages_rgcn():
+    x, ptr, idx, b, num_head, edge_index = prepare_data()
+    deg = ptr[1:] - ptr[:-1]
     ans = []
     num_rel = 7
     num_type = num_rel
@@ -165,5 +165,37 @@ def show_tune_stages_rgcn():
         print(item)
 
 
-show_tune_stages_gcn()
+def show_tune_stages_lstm():
+    x, ptr, idx, b, num_head, edge_index = prepare_data()
+    deg = ptr[1:] - ptr[:-1]
+    # num_edge = idx.shape[0]
+    in_feat = x.shape[-1]
+    ans = []
+    lstm_module = torch.nn.LSTM(in_feat, in_feat, batch_first=True).cuda()
+
+    # stage 1: vertex centric
+    # ans.append(
+    #     cxgc.prof(
+    #         "lstm", "vertex-wise",
+    #         lambda: cxgc.NeighborLstmOneByOneOP(lstm_module, ptr, idx, x)))
+
+    # stage 2: same degree
+    deg = ptr[1:] - ptr[:-1]
+    print(torch.max(deg))
+    count = torch.bincount(deg).cpu()
+    metric = torch.argsort(deg, descending=False)
+    ptr, idx = cxgc.reorder_by(ptr, idx, metric)
+
+    for num_center_in_batch in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]:
+        ans.append(
+            cxgc.prof(
+                "lstm", f"batch {num_center_in_batch}",
+                lambda: cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count,
+                                               num_center_in_batch, 50000))[0])
+    for item in ans:
+        print(item)
+
+
+# show_tune_stages_gcn()
 # show_tune_stages_rgcn()
+show_tune_stages_lstm()
