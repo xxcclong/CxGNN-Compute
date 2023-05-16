@@ -107,6 +107,7 @@ def remove_from_graph(ptr, idx, remove_flag):
 
 
 def remove_from_graph_by_edge(ptr, idx, remove_flag):
+    assert remove_flag.shape == idx.shape, f"remove_flag.shape != idx.shape {remove_flag.shape} {idx.shape}"
     t0 = time.time()
     device = ptr.device
     ptr = ptr.cpu().numpy()
@@ -117,11 +118,12 @@ def remove_from_graph_by_edge(ptr, idx, remove_flag):
     for i in range(len(ptr) - 1):
         deg = 0
         for j in range(ptr[i], ptr[i + 1]):
-            if not remove_flag[idx[j]]:
+            if not remove_flag[j]:
                 new_idx.append(idx[j])
                 deg += 1
         if deg > 0:
             new_ptr.append(new_ptr[-1] + deg)
     print("remove: time elapsed: ", time.time() - t0)
+    print("after removing", len(new_ptr), len(new_idx))
     return torch.from_numpy(numpy.array(new_ptr)).to(device), torch.from_numpy(
         numpy.array(new_idx)).to(device)

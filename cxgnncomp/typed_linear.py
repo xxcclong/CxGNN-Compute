@@ -126,7 +126,7 @@ class TypedLinearS2EOP(torch.autograd.Function):
     @staticmethod
     def preprocess(weights, types, src_idx, thres):
         num_rel = weights.shape[0]
-        num_item = types.shape[0]
+        num_item = src_idx.shape[0]
         count = torch.bincount(types)
         new_types = torch.empty([types.shape[0] + num_rel * (thres - 1)],
                                 device=weights.device,
@@ -139,6 +139,7 @@ class TypedLinearS2EOP(torch.autograd.Function):
         cxgnncomp_backend.pad_rel_idx(new_types, new_src_idx, count, thres,
                                       num_rel, types.shape[0])
         sorted_types, indices = torch.sort(new_types)
+        print("num valid item for S2E", num_item)
         return [sorted_types, num_item, new_src_idx, indices]
 
     @staticmethod

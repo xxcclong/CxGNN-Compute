@@ -176,6 +176,12 @@ def diff_lstm():
         cxgc.prof("lstm neighbor op2", f"padding {num_center_in_batch}",
                   lambda: lstm_module(new_tensor))
 
+        for num_center_in_batch in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]:
+            cxgc.prof(
+                "lstm neighbor op", f"padding {num_center_in_batch}",
+                lambda: cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count,
+                                               num_center_in_batch, 50000))
+
 
 def diff_rgcn():
     remove = False
@@ -220,7 +226,7 @@ def diff_rgcn():
                   lambda: torch.mm(removed_tensor, weights[0]))
 
 
-# diff_lstm()
+diff_lstm()
 # diff_gat()
 # diff_rgcn()
-diff_gcn()
+# diff_gcn()

@@ -3,6 +3,20 @@ import time
 import torch
 
 
+def NeighborLstmOneByOneOP(module, ptr, idx, feat):
+    num_center_node = ptr.shape[0] - 1
+    feat_len = feat.shape[-1]
+    output = torch.empty([num_center_node, feat.shape[-1]], device=feat.device)
+    for i in range(ptr.shape[0] - 1):
+        deg = ptr[i + 1] - ptr[i]
+        if deg > 0:
+            comp_idx = idx[ptr[i]:ptr[i + 1]]
+            tmp = module(
+                torch.index_select(feat, 0, comp_idx).view(deg, -1), None)
+            output[i] = tmp[0].view(-1, feat_len).sum(0)
+    return output
+
+
 def NeighborLstmOP(module, ptr, idx, feat, deg_count):
     # check
     # assert not torch.any(deg[1:] < deg[:-1])  # increasing

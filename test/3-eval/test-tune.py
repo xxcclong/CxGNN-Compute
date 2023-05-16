@@ -1,5 +1,6 @@
 import cxgnncomp as cxgc
 import cxgnncomp
+from torch_geometric.utils import softmax
 import torch
 import time
 import argparse
@@ -192,10 +193,80 @@ def show_tune_stages_lstm():
                 "lstm", f"batch {num_center_in_batch}",
                 lambda: cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count,
                                                num_center_in_batch, 50000))[0])
+
+    remove_flag = deg > 5000
+    print(deg[remove_flag])
+    ptr, idx = cxgc.remove_from_graph(ptr, idx, remove_flag)
+    deg = ptr[1:] - ptr[:-1]
+    count = torch.bincount(deg).cpu()
+    metric = torch.argsort(deg, descending=False)
+    ptr, idx = cxgc.reorder_by(ptr, idx, metric)
+
+    new_tensor = torch.randn([3, 13161, x.shape[-1]], device=x.device)
+    t_diff = cxgc.prof("lstm neighbor op2", f"padding {num_center_in_batch}",
+                       lambda: lstm_module(new_tensor))[0]
+
+    for num_center_in_batch in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]:
+        t = cxgc.prof(
+            "lstm", f"batch {num_center_in_batch}",
+            lambda: cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count,
+                                           num_center_in_batch, 50000))[0]
+        if t + t_diff < min(ans):
+            ans.append(t + t_diff)
+
     for item in ans:
         print(item)
 
 
-# show_tune_stages_gcn()
+def show_tune_stages_gat():
+    ans = []
+    x, ptr, idx, b, num_head, edge_index = prepare_data()
+    feat_len = x.shape[-1]
+    num_node = ptr.shape[0] - 1
+    att = torch.randn([idx.shape[0], num_head], device="cuda")
+    att_src = torch.randn([num_node, num_head], device="cuda")
+    att_dst = torch.randn([num_node, num_head], device="cuda")
+
+    cxgnn_conv = cxgnncomp.MyGATConv(in_channels=feat_len,
+                                     out_channels=feat_len,
+                                     heads=num_head).cuda()
+    # vertex centric
+    ans.append(
+        cxgnncomp.prof("edge_softmax", "pyg", lambda: softmax(att, idx))[0])
+
+    ans.append(
+        cxgnncomp.prof(
+            "edge_softmax", "cxgnn opwise",
+            lambda: cxgnn_conv.edge_softmax_opwise(ptr=ptr,
+                                                   idx=idx,
+                                                   att_src=att_src,
+                                                   att_dst=att_dst,
+                                                   num_edge=idx.shape[0],
+                                                   relu_l=0.2))[0])
+    ans.append(
+        cxgnncomp.prof(
+            "edge_softmax", "cxgnn fused",
+            lambda: cxgnn_conv.edge_softmax_fused(ptr=ptr,
+                                                  idx=idx,
+                                                  att_src=att_src,
+                                                  att_dst=att_dst,
+                                                  num_edge=idx.shape[0],
+                                                  relu_l=0.2))[0])
+
+    for thres in reversed([32, 64, 128, 256, 512]):
+        new_ptr, new_target = cxgnncomp.neighbor_grouping(ptr,
+                                                          neighbor_thres=thres)
+        ans.append(
+            cxgnncomp.prof(
+                "edge_softmax",
+                "spmv-neighbor-group", lambda: cxgnncomp_backend.spmv(
+                    new_ptr, idx, att_src.squeeze(), new_ptr.shape[0] - 1))[0])
+
+    for item in ans:
+        print(item)
+
+
+show_tune_stages_gcn()
 # show_tune_stages_rgcn()
-show_tune_stages_lstm()
+# show_tune_stages_lstm()
+# show_tune_stages_gat()
