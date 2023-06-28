@@ -62,9 +62,12 @@ class _Timer:
         self.start_time = time.time()
         self.input_shape = None
         self.output_shape = None
+        self.skip = True
 
     def start(self):
         """Start the timer."""
+        if self.skip:
+            return
         assert not self.started_, 'timer' + self.name_ + 'has already been started'
         torch.cuda.synchronize()
         self.start_time = time.time()
@@ -72,6 +75,8 @@ class _Timer:
 
     def stop(self):
         """Stop the timer."""
+        if self.skip:
+            return
         assert self.started_, 'timer' + self.name_ + ' is not started'
         torch.cuda.synchronize()
         self.elapsed_ += (time.time() - self.start_time)
@@ -79,11 +84,15 @@ class _Timer:
 
     def reset(self):
         """Reset timer."""
+        if self.skip:
+            return
         self.elapsed_ = 0.0
         self.started_ = False
 
     def elapsed(self, reset=True):
         """Calculate the elapsed time."""
+        if self.skip:
+            return
         started_ = self.started_
         # If the timing in progress, end it first.
         assert not self.started_, 'timer' + self.name_ + 'is still started'

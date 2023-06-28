@@ -113,7 +113,9 @@ class GCN(GNN):
         if "CSR" in self.graph_type:
             return MyGCNConv(in_channels, out_channels)
         elif "DGL" in self.graph_type:
-            return dglnn.GraphConv(in_channels, out_channels)
+            return dglnn.GraphConv(in_channels,
+                                   out_channels,
+                                   allow_zero_in_degree=True)
         elif "PyG" in self.graph_type or "COO" in self.graph_type:
             return pygnn.GCNConv(in_channels, out_channels)
         else:
@@ -196,6 +198,18 @@ class RGCN(GNN):
                            etypes[:blocks[-1].number_of_edges()])
         return x.log_softmax(dim=-1)
 
+    def forward_pyg(self, edge_index, x):
+        etypes = torch.randint(0,
+                               self.num_rel, (edge_index.shape[1], ),
+                               device=x.device)
+        for i, conv in enumerate(self.convs[:-1]):
+            x = conv(x, edge_index, etypes)
+            x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.convs[-1](x, edge_index, etypes)
+        return x.log_softmax(dim=-1)
+
 
 class GAT(GNN):
 
@@ -209,6 +223,7 @@ class GAT(GNN):
         elif "DGL" in self.graph_type:
             return dglnn.GATConv(in_channels,
                                  out_channels,
+                                 allow_zero_in_degree=True,
                                  num_heads=kwargs.get('heads', 1))
         elif "PyG" in self.graph_type or "COO" in self.graph_type:
             return pygnn.GATConv(in_channels, out_channels)

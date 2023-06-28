@@ -1,4 +1,5 @@
 import torch
+import time
 from torch.nn import Parameter
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.inits import glorot
@@ -8,7 +9,7 @@ import torch.nn.functional as F
 from torch_scatter import segment_csr, gather_csr
 from .timer import TimerOP
 from .graph_kernel import SpMMValOP
-from .typed_linear import TypedLinearE2EOP
+from .typed_linear import TypedLinearE2EOP, TypedLinearS2DPushOP
 from .util import global_tuner
 import cxgnncomp_backend
 
@@ -18,6 +19,38 @@ torch.fx.wrap("gather")
 torch.fx.wrap("sage_sum_forward")
 torch.fx.wrap("aggr_rel")
 torch.fx.wrap("sage_mean_forward")
+
+
+class AggrOP(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, ptr, idx, num_center):
+        ctx.save_for_backward(x, ptr, idx, num_center)
+        torch.cuda.synchronize()
+        output_dst = global_tuner.tune_graph(
+            num_center,
+            idx.shape[0],
+            x.shape[-1],
+            cxgnncomp_backend.run_spmm_configurable,
+            [
+                ptr,
+                idx,
+                x,
+                num_center,
+            ],
+        )
+        torch.cuda.synchronize()
+        return output_dst
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, ptr, idx, num_center = ctx.saved_tensors
+        torch.cuda.synchronize()
+        grad_vin = global_tuner.tune_graph(
+            num_center, idx.shape[0], grad_out.shape[-1],
+            cxgnncomp_backend.run_spmm_configurable_bwd,
+            [ptr, idx, x, grad_out, num_center])
+        return grad_vin, None, None, None
 
 
 class MySageConv(torch.nn.Module):
@@ -46,8 +79,14 @@ class MySageConv(torch.nn.Module):
             self.lin_r.reset_parameters()
 
     def forward(self, x, ptr, idx, num_node):
-        out = sage_mean_forward(x, ptr, idx, num_node)
-        out = self.lin_l(out)
+
+        if self.in_channels > self.hidden_channels:
+            out = self.lin_l(out)
+            out = AggrOP.apply(x, ptr, idx, num_node)
+        else:
+            out = AggrOP.apply(x, ptr, idx, num_node)
+            out = self.lin_l(out)
+
         if self.root_weight:
             if (num_node != 0):
                 out += self.lin_r(x[:num_node])
@@ -191,40 +230,20 @@ def run_rgcn4(x, ptr, idx, edge_types, linear, num_center, num_edge):
     # print(x.shape, ptr.shape, idx.shape, edge_types.shape, linear.shape,
     #       x.dtype, ptr.dtype, idx.dtype, edge_types.dtype, linear.dtype,
     #       x.device, ptr.device, idx.device, edge_types.device, linear.device)
+    # impl 1
+    torch.cuda.synchronize()
+    t0 = time.time()
     x_idxed = x[idx[:num_edge]]
+    torch.cuda.synchronize()
+    t1 = time.time()
+    print("index time", t1 - t0)
     out = TypedLinearE2EOP.apply(x_idxed, linear, edge_types)
+    torch.cuda.synchronize()
+    t2 = time.time()
+    print("typed mm", t2 - t1)
     new_idx = torch.arange(0, num_edge, device=x_idxed.device)
     out = AggrOP.apply(out, ptr, new_idx, num_center)
     return out
-
-
-class AggrOP(torch.autograd.Function):
-
-    @staticmethod
-    def forward(ctx, x, ptr, idx, num_center):
-        ctx.save_for_backward(x, ptr, idx, num_center)
-        output_dst = global_tuner.tune_graph(
-            num_center,
-            idx.shape[0],
-            x.shape[-1],
-            cxgnncomp_backend.run_spmm_configurable,
-            [
-                ptr,
-                idx,
-                x,
-                num_center,
-            ],
-        )
-        return output_dst
-
-    @staticmethod
-    def backward(ctx, grad_out):
-        x, ptr, idx, num_center = ctx.saved_tensors
-        grad_vin = global_tuner.tune_graph(
-            num_center, idx.shape[0], grad_out.shape[-1],
-            cxgnncomp_backend.run_spmm_configurable_bwd,
-            [ptr, idx, x, grad_out, num_center])
-        return grad_vin, None, None, None
 
 
 class MyRGCNConv(torch.nn.Module):
@@ -356,7 +375,11 @@ class MyGATConv(torch.nn.Module):
         edge_value = TimerOP.apply(edge_value, "softmax1", False)
         edge_value = TimerOP.apply(edge_value, "aggregation", True)
         # out = sage_sum_forward_edge_value(x_src, ptr, idx, edge_value, num_dst)
-        out = SpMMValOP.apply(x_src, ptr, idx, edge_value, num_dst)
+        if self.heads == 1:
+            out = sage_sum_forward_edge_value(x_src, ptr, idx,
+                                              edge_value.squeeze(), num_dst)
+        else:
+            out = SpMMValOP.apply(x_src, ptr, idx, edge_value, num_dst)
         out = TimerOP.apply(out, "aggregation", False)
         if self.concat:
             out = out.view(-1, H * C)
@@ -423,7 +446,7 @@ class MyGCNConv(torch.nn.Module):
     def __init__(self,
                  in_channels: int,
                  out_channels: int,
-                 normalize: bool = True,
+                 normalize: bool = False,
                  bias: bool = True) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -458,19 +481,27 @@ class MyGCNConv(torch.nn.Module):
 
     def forward(self, x, ptr, idx, num_node):
         x = TimerOP.apply(x, "linear", True)
-        out = self.lin(x)  # order of lin and aggregation is consistent to PyG
+        if self.in_channels > self.out_channels:
+            out = self.lin(
+                x)  # order of lin and aggregation is consistent to PyG
+        else:
+            out = x
         out = TimerOP.apply(out, "linear", False)
         if self.normalize:
             out = TimerOP.apply(out, "aggregation", True)
             TimerOP.apply(out, "gcn norm", True)
             edge_value = self.gcn_norm(ptr, idx)
             TimerOP.apply(edge_value, "gcn norm", False)
-            print(out.shape, ptr.shape, idx.shape, edge_value.shape, num_node)
+            # print(out.shape, ptr.shape, idx.shape, edge_value.shape, num_node)
             out = sage_sum_forward_edge_value(out, ptr, idx, edge_value,
                                               num_node)
             out = TimerOP.apply(out, "aggregation", False)
         else:
-            out = sage_sum_forward(x, ptr, idx, num_node)
+            # out = sage_sum_forward(x, ptr, idx, num_node)
+            out = AggrOP.apply(out, ptr, idx, num_node)
+
+        if self.in_channels <= self.out_channels:
+            out = self.lin(out)
 
         if self.bias is not None:
             return out + self.bias

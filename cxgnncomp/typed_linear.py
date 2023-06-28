@@ -76,6 +76,7 @@ class TypedLinearE2EOP(torch.autograd.Function):
         num_rel = weights.shape[0]
         num_item = types.shape[0]
         count = torch.bincount(types)
+        cpu_count = count.cpu()
         new_types = torch.empty([types.shape[0] + num_rel * (thres - 1)],
                                 device=weights.device,
                                 dtype=types.dtype)
@@ -83,7 +84,7 @@ class TypedLinearE2EOP(torch.autograd.Function):
         cxgnncomp_backend.pad_rel(new_types, count, thres, num_rel,
                                   types.shape[0])
         sorted_types, indices = torch.sort(new_types)
-        return [sorted_types, num_item, indices]
+        return [sorted_types, num_item, indices, cpu_count]
 
     @staticmethod
     def forward(ctx,
@@ -93,30 +94,37 @@ class TypedLinearE2EOP(torch.autograd.Function):
                 preprocessed=[],
                 thres=256,
                 count=None):
-        if len(preprocessed) == 3:
+        if len(preprocessed) == 4:
             # return typed_matmul(x, weights, types, x.shape[0])
-            sorted_types, num_item, indices = preprocessed
+            sorted_types, num_item, indices, count = preprocessed
         else:
-            sorted_types, num_item, indices = TypedLinearE2EOP.preprocess(
+            sorted_types, num_item, indices, count = TypedLinearE2EOP.preprocess(
                 weights, types, thres)
         # print(torch.max(indices), x.shape, sorted_types.shape, indices.shape)
         output = typed_matmul(x, weights, sorted_types, num_item, indices)
-        ctx.save_for_backward(x, weights, types, indices, sorted_types)
+        ctx.save_for_backward(x, weights, types, indices, sorted_types, count)
+        torch.cuda.synchronize()
         return output[:num_item]
 
     @staticmethod
     def backward(ctx, grad_out):
         # a naive implementation
-        x, weights, types, indices, sorted_types = ctx.saved_tensors
+        x, weights, types, indices, sorted_types, count = ctx.saved_tensors
         num_rel = weights.shape[0]
         num_item = types.shape[0]
         trans_weights = torch.transpose(weights, 1, 2).contiguous()
         grad_x = typed_matmul(grad_out, trans_weights, sorted_types, num_item,
                               indices)
         grad_weights = torch.empty_like(weights)
+        torch.cuda.synchronize()
+        t0 = time.time()
         for i in range(num_rel):
             # the indexing here is not efficient
-            grad_weights[i] = torch.mm(x[types == i].t(), grad_out[types == i])
+            # grad_weights[i] = torch.mm(x[types == i].t(), grad_out[types == i])
+            grad_weights[i] = torch.mm(x[:count[i]].t(), grad_out[:count[i]])
+        torch.cuda.synchronize()
+        t1 = time.time()
+        print("bwd mm", t1 - t0)
         return grad_x, grad_weights, None
 
 

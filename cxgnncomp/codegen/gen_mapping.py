@@ -30,6 +30,7 @@ class Tuner():
         self.block_maps = [0, 1]
         self.grid_maps = [0, 1]
         self.lazy = lazy
+        print(f"Tuner lazy {lazy}")
 
     def hash(
         self,

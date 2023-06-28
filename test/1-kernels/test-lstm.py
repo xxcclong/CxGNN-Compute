@@ -1,12 +1,13 @@
 import torch
 import cxgnncomp as cxgc
 import time
+import torch_geometric.nn as pygnn
 
-in_feat = 256
+in_feat = 16
 
 
 def prepare_data():
-    dset = "arxiv"
+    dset = "papers100M-sample-1000"
     num_head = 1
     x, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
         dset,
@@ -36,6 +37,15 @@ print(
 )
 
 lstm_module = torch.nn.LSTM(in_feat, in_feat, batch_first=True).cuda()
+
+
+def lstm_pyg():
+    conv = pygnn.SAGEConv(in_feat, in_feat, aggr="lstm").cuda()
+    cxgc.prof("lstm", "pyg", lambda: conv(x, edge_index))
+    exit()
+
+
+lstm_pyg()
 
 
 def run_lstm(module, count):
@@ -85,7 +95,7 @@ cxgc.prof(
 output1 = cxgc.NeighborLstmOP(lstm_module, ptr, idx, x, count)
 output2 = cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count, 64, 10000)
 cxgc.compare(output1, output2)
-exit()
+# exit()
 
 
 def run_lstm_one_op():

@@ -145,5 +145,5 @@ def batching_lstm():
                   lambda: lstm_module(new_tensor))
 
 
-# batching_rgcn()
-batching_lstm()
+batching_rgcn()
+# batching_lstm()

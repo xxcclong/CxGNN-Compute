@@ -310,6 +310,7 @@ def test_dense_overhead():
         t3 = time.time()
         if i == 9:
             print("index select", t1 - t0, "mm", t2 - t1, "index add", t3 - t2)
+            print("ratio", ((t1 - t0) + (t3 - t2)) / (t3 - t0))
 
 
 def process_edge_index(edge_index, block=256):
@@ -367,7 +368,7 @@ def show_padding_overhead(src):
 
 
 def test_sddmm_triton():
-    infeat = 128
+    infeat = 256
     num_head = 16
     dev = torch.device("cuda:0")
 
@@ -428,6 +429,93 @@ def test_sddmm_triton():
             1], new_edge_index[0], new_edge_index.shape[1])[edge_pos])
 
 
+def gen_data_neighbor():
+    import os
+    dset = "arxiv"
+    feat, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
+        dset, feat_len=32, num_head=1, need_edge_index=True)
+    new_ptr, new_target = cxgc.neighbor_grouping(ptr, 32)
+    ptr = new_ptr
+    new_edge_index = torch.stack([
+        idx,
+        torch.repeat_interleave(torch.arange(
+            0, ptr.shape[0] - 1, device="cuda"),
+                                repeats=ptr[1:] - ptr[:-1])
+    ],
+                                 dim=0)
+    edge_index = edge_index.cpu().numpy()
+    os.makedirs(f"/home/huangkz/data/dataset_diskgnn/{dset}-ng/processed",
+                exist_ok=True)
+
+    edge_index.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-ng/processed/edge_index.dat"
+    )
+    ptr = ptr.cpu().numpy()
+    ptr.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-ng/processed/csr_ptr_undirected.dat"
+    )
+    idx = idx.cpu().numpy()
+    idx.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-ng/processed/csr_idx_undirected.dat"
+    )
+
+
+def gen_data():
+    import os
+    dset = "friendster"
+    num_seed = 1000
+    feat, ptr, idx, b, edge_index = cxgc.prepare_data_sampled_graph(
+        dset=dset,
+        feat_len=32,
+        num_head=1,
+        num_seeds=num_seed,
+        need_edge_index=True)
+    edge_index = edge_index.cpu().numpy()
+    os.makedirs(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-sample-{num_seed}/processed",
+        exist_ok=True)
+
+    edge_index.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-sample-{num_seed}/processed/edge_index.dat"
+    )
+    ptr = ptr.cpu().numpy()
+    ptr.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-sample-{num_seed}/processed/csr_ptr_undirected.dat"
+    )
+    idx = idx.cpu().numpy()
+    idx.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-sample-{num_seed}/processed/csr_idx_undirected.dat"
+    )
+
+
+def gen_data_partition():
+    import os
+    dset = "papers100M"
+    num_seed = 1000
+    feat, ptr, idx, b, edge_index = cxgc.prepare_data_sampled_graph(
+        dset=dset,
+        feat_len=32,
+        num_head=1,
+        num_seeds=num_seed,
+        need_edge_index=True)
+    edge_index = edge_index.cpu().numpy()
+    os.makedirs(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-sample-{num_seed}/processed",
+        exist_ok=True)
+
+    edge_index.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-sample-{num_seed}/processed/edge_index.dat"
+    )
+    ptr = ptr.cpu().numpy()
+    ptr.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-sample-{num_seed}/processed/csr_ptr_undirected.dat"
+    )
+    idx = idx.cpu().numpy()
+    idx.tofile(
+        f"/home/huangkz/data/dataset_diskgnn/{dset}-sample-{num_seed}/processed/csr_idx_undirected.dat"
+    )
+
+
 if __name__ == "__main__":
     # test_sddmm()
     # test_dense()
@@ -437,5 +525,8 @@ if __name__ == "__main__":
     # test_edge_mlp()
     # test_add()
     # test_dense_overhead()
-    test_process_edge_index()
-    test_sddmm_triton()
+    # test_process_edge_index()
+    # test_sddmm_triton()
+
+    gen_data()
+    # gen_data_neighbor()

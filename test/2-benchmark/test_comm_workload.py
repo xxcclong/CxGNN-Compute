@@ -155,7 +155,7 @@ print(args)
 
 dset = args.dset
 
-if dset not in ["papers100M", "mag240m", "wiki90m"]:
+if dset not in ["papers100M", "mag240m", "wiki90m", "friendster"]:
     x, ptr, idx, batch, edge_index = cxgc.prepare_data_full_graph(
         dset=dset, need_edge_index=True, need_feat=False, undirected=True)
     num_edge = idx.shape[0]

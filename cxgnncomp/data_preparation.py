@@ -26,11 +26,17 @@ def prepare_data_full_graph(
     undirected=True,
 ):
     print(
-        f"=======\nLoading full graph structure... dataset={dset} feature length={feat_len} num_head={num_head} undirected={undirected}\n======="
+        f"=======\nLoading full graph structure... dataset={dset} feature length={feat_len * need_feat} num_head={num_head} undirected={undirected}\n======="
     )
     ptr, idx = cxgnndl.load_full_graph_structure(dset, undirected)
     ptr = torch.from_numpy(ptr).cuda()
     idx = torch.from_numpy(idx).cuda()
+    num_node = max(torch.max(idx) + 1, ptr.shape[0] - 1)
+    if ptr.shape[0] - 1 != num_node:
+        new_ptr = torch.zeros([num_node + 1], dtype=torch.int64, device="cuda")
+        new_ptr[:ptr.shape[0]] = ptr
+        new_ptr[ptr.shape[0]:] = ptr[-1]
+        ptr = new_ptr
     if need_feat:
         if num_head == 1:
             x = torch.randn([ptr.shape[0] - 1, feat_len],
@@ -47,6 +53,7 @@ def prepare_data_full_graph(
     batch["num_edge_in_layer"] = torch.tensor([idx.shape[0]] * 4)
     print("After loading full graph structure...")
     print(f"num_edge {idx.shape[0]} num_center {ptr.shape[0] - 1}")
+    print(f"num_node_in_layer {batch['num_node_in_layer']}")
     if need_edge_index:
         edge_index = torch.stack([
             idx,

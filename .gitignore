@@ -139,3 +139,4 @@ output_*
 input.txt
 output.txt
 *.out
+test/3-eval/*txt
