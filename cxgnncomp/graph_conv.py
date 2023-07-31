@@ -1,8 +1,17 @@
 import torch
+import time
 from torch.nn import Parameter
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.inits import glorot
-from cxgnncomp_backend import edge_attention, sage_sum_forward_edge_value, gather, sage_sum_forward, aggr_rel, sage_mean_forward
+from cxgnncomp_backend import edge_attention, sage_sum_forward_edge_value, gather, sage_sum_forward, aggr_rel, sage_mean_forward, selective_aggr, selective_aggr_bwd, aggr_rgcn_direct_func
+from .util import log
+import torch.nn.functional as F
+from torch_scatter import segment_csr, gather_csr
+from .timer import TimerOP
+from .graph_kernel import SpMMValOP
+from .typed_linear import TypedLinearE2EOP, TypedLinearS2DPushOP
+from .util import global_tuner
+import cxgnncomp_backend
 
 torch.fx.wrap("edge_attention")
 torch.fx.wrap("sage_sum_forward_edge_value")
@@ -12,14 +21,47 @@ torch.fx.wrap("aggr_rel")
 torch.fx.wrap("sage_mean_forward")
 
 
+class AggrOP(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, ptr, idx, num_center):
+        ctx.save_for_backward(x, ptr, idx, num_center)
+        torch.cuda.synchronize()
+        output_dst = global_tuner.tune_graph(
+            num_center,
+            idx.shape[0],
+            x.shape[-1],
+            cxgnncomp_backend.run_spmm_configurable,
+            [
+                ptr,
+                idx,
+                x,
+                num_center,
+            ],
+        )
+        torch.cuda.synchronize()
+        return output_dst
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, ptr, idx, num_center = ctx.saved_tensors
+        torch.cuda.synchronize()
+        grad_vin = global_tuner.tune_graph(
+            num_center, idx.shape[0], grad_out.shape[-1],
+            cxgnncomp_backend.run_spmm_configurable_bwd,
+            [ptr, idx, x, grad_out, num_center])
+        return grad_vin, None, None, None
+
+
 class MySageConv(torch.nn.Module):
 
-    def __init__(self,
-                 in_channels,
-                 hidden_channels,
-                 root_weight: bool = True,
-                 bias: bool = True,
-                 mean_forward: bool = True):
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        root_weight: bool = True,
+        bias: bool = True,
+    ):
         super(MySageConv, self).__init__()
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
@@ -29,7 +71,6 @@ class MySageConv(torch.nn.Module):
             self.lin_r = torch.nn.Linear(in_channels,
                                          hidden_channels,
                                          bias=False)
-        self.mean_forward = mean_forward
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -37,20 +78,15 @@ class MySageConv(torch.nn.Module):
         if self.root_weight:
             self.lin_r.reset_parameters()
 
-    def forward(self, x, ptr, idx, num_node, noise=False):
-        if self.mean_forward:
-            out = sage_mean_forward(x, ptr, idx, num_node)
+    def forward(self, x, ptr, idx, num_node):
+
+        if self.in_channels > self.hidden_channels:
+            out = self.lin_l(out)
+            out = AggrOP.apply(x, ptr, idx, num_node)
         else:
-            out = x[:num_node]
-        # noise
-        if (noise):
-            a = torch.randn_like(out)
-            a.requires_grad_ = False
-            cc = out.detach()
-            so = torch.norm(cc, dim=1).reshape([cc.shape[0], 1])
-            sa = torch.norm(a, dim=1).reshape([cc.shape[0], 1])
-            out += 0.15 * a * so / sa
-        out = self.lin_l(out)
+            out = AggrOP.apply(x, ptr, idx, num_node)
+            out = self.lin_l(out)
+
         if self.root_weight:
             if (num_node != 0):
                 out += self.lin_r(x[:num_node])
@@ -75,108 +111,174 @@ class MyGINConv(torch.nn.Module):
         self.eps.data.fill_(self.init_eps)
 
     def forward(self, x, ptr, idx, num_node):
-        out = sage_sum_forward(x, ptr, idx, num_node)
+        out = sage_mean_forward(x, ptr, idx, num_node)
         out += (1 + self.eps) * x[:num_node]
         out = self.nn(out)
         return out
 
 
-class MyRGCNConvNaive(torch.nn.Module):
+class RGCNOP(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, weights, ptr, idx, rel, num_center):
+        ctx.save_for_backward(x, weights, ptr, idx, rel)
+        num_rel = weights.shape[0]
+        output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
+        for i in range(num_rel):
+            weights[i] = TimerOP.apply(weights[i], f"mm{i}", True)
+            transformed_x = torch.mm(x, weights[i])
+            transformed_x = TimerOP.apply(transformed_x, f"mm{i}", False)
+            transformed_x = TimerOP.apply(transformed_x, f"selective{i}", True)
+            selective_aggr(transformed_x, ptr, idx, (rel == i), output,
+                           num_center)
+            output = TimerOP.apply(output, f"selective{i}", False)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, weights, ptr, idx, rel = ctx.saved_tensors
+        num_rel = weights.shape[0]
+        grad_x = torch.zeros_like(x)
+        grad_weights = []
+        num_center = grad_out.shape[0]
+        num_node = x.shape[0]
+        x_t = x.transpose(0, 1)
+        for i in range(num_rel):
+            grad_selective = torch.zeros([num_node, grad_out.shape[-1]],
+                                         device=x.device)
+            grad_selective = TimerOP.apply(grad_selective, f"selective_bwd{i}",
+                                           True)
+            selective_aggr_bwd(grad_out, ptr, idx, (rel == i), grad_selective,
+                               num_center)  # pass grad through selective_aggr
+            grad_selective = TimerOP.apply(grad_selective, f"selective_bwd{i}",
+                                           False)
+            grad_selective = TimerOP.apply(grad_selective, f"mm_bwd{i}", True)
+            grad_x += torch.mm(grad_selective, weights[i].transpose(0, 1))
+            grad_selective = TimerOP.apply(grad_selective, f"mm_bwd{i}", False)
+            grad_weights.append(torch.mm(x_t, grad_selective))
+        return grad_x, torch.stack(grad_weights), None, None, None, None
+
+
+def RGCNOP_sorted(x, weights, src, dst, num_feat_per_rel, num_center):
+    num_rel = weights.shape[0]
+    output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
+    cnt = 0
+    for i in range(num_rel):
+        s = src[cnt:cnt + num_feat_per_rel[i]]
+        d = dst[cnt:cnt + num_feat_per_rel[i]]
+        cnt += num_feat_per_rel[i]
+        feat = x[s]
+        transformed_feat = F.linear(feat, weights[i].T)
+        output.index_add_(0, d, transformed_feat)
+    return output
+
+
+class RGCNOP2(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, weights, ptr, idx, rel, num_center):
+        num_rel = weights.shape[0]
+        output = torch.zeros([num_center, weights.shape[-1]], device=x.device)
+        aggr_outputs = []
+        for i in range(num_rel):
+            aggr_output = torch.zeros([num_center, weights.shape[-2]],
+                                      device=x.device)
+            selective_aggr(x, ptr, idx, (rel == i), aggr_output, num_center)
+            output += torch.mm(aggr_output, weights[i])
+            # output += torch.empty([num_center, weights.shape[-1]],
+            #                       device=x.device)
+            aggr_outputs.append(aggr_output)
+        ctx.save_for_backward(x, weights, ptr, idx, rel,
+                              torch.stack(aggr_outputs))
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, weights, ptr, idx, rel, aggr_outputs = ctx.saved_tensors
+        num_rel = weights.shape[0]
+        grad_x = torch.zeros_like(x)
+        grad_weights = []
+        num_center = grad_out.shape[0]
+        for i in range(num_rel):
+            grad_mm = torch.mm(grad_out, weights[i].transpose(0, 1))
+            # grad_mm = torch.empty([num_center, weights.shape[-2]],
+            #                       device=x.device)
+            grad_weights.append(
+                torch.mm(aggr_outputs[i].transpose(0, 1), grad_out))
+            selective_aggr_bwd(grad_mm, ptr, idx, (rel == i), grad_x,
+                               num_center)  # pass grad through selective_aggr
+        return grad_x, torch.stack(grad_weights), None, None, None, None
+
+
+class RGCNOP3(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, weights, ptr, idx, rel, num_center):
+        ctx.save_for_backward(x, weights, ptr, idx, rel)
+        output = aggr_rgcn_direct_func(x, ptr, idx, weights, rel.int(),
+                                       num_center)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, weights, ptr, idx, rel = ctx.saved_tensors
+        return torch.randn_like(x), torch.randn_like(
+            weights), None, None, None, None
+
+
+def run_rgcn4(x, ptr, idx, edge_types, linear, num_center, num_edge):
+    # print(x.shape, ptr.shape, idx.shape, edge_types.shape, linear.shape,
+    #       x.dtype, ptr.dtype, idx.dtype, edge_types.dtype, linear.dtype,
+    #       x.device, ptr.device, idx.device, edge_types.device, linear.device)
+    # impl 1
+    torch.cuda.synchronize()
+    t0 = time.time()
+    x_idxed = x[idx[:num_edge]]
+    torch.cuda.synchronize()
+    t1 = time.time()
+    print("index time", t1 - t0)
+    out = TypedLinearE2EOP.apply(x_idxed, linear, edge_types)
+    torch.cuda.synchronize()
+    t2 = time.time()
+    print("typed mm", t2 - t1)
+    new_idx = torch.arange(0, num_edge, device=x_idxed.device)
+    out = AggrOP.apply(out, ptr, new_idx, num_center)
+    return out
+
+
+class MyRGCNConv(torch.nn.Module):
 
     def __init__(self, in_channels, hidden_channels, num_rel):
-        super(MyRGCNConvNaive, self).__init__()
+        super(MyRGCNConv, self).__init__()
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
         self.num_rel = num_rel
         self.linear = torch.nn.Parameter(
             torch.randn(num_rel, in_channels, hidden_channels))
+        log.info("linear shape: {}".format(self.linear.shape))
         self.register_parameter("rel_weight", self.linear)
+        self.single_linear = torch.nn.Linear(in_channels, hidden_channels)
         self.reset_parameters()
 
     def reset_parameters(self):
-        self.linear.reset_parameters()
-        pass
-
-    def forward(self, x, edge_index, rel, num_node, num_edge):
-
-        assert (num_edge != 0)
-        scattered_feature = torch.index_select(x,
-                                               dim=0,
-                                               index=edge_index[0][:num_edge])
-        scattered_weight = torch.index_select(self.linear,
-                                              dim=0,
-                                              index=rel[:num_edge])
-        transformed_feat = torch.mm(scattered_feature, scattered_weight)
-        # out = sage_mean_forward(
-        #     transformed_feat, ptr, idx, num_node)
-        out = gather(transformed_feat, edge_index[1][:num_edge], num_node)
-        return out
-
-
-class MyRGCNConvOpt1(torch.nn.Module):
-
-    def __init__(self, in_channels, hidden_channels, num_rel):
-        super(MyRGCNConvOpt1, self).__init__()
-        self.in_channels = in_channels
-        self.hidden_channels = hidden_channels
-        self.num_rel = num_rel
-        self.linear = torch.nn.Parameter(
-            torch.randn(self.num_rel, in_channels, hidden_channels))
-        self.register_parameter("rel_weight", self.linear)
-        self.reset_parameters()
-
-    def reset_parameters(self):
+        glorot(self.linear)
         # self.linear.reset_parameters()
+        self.single_linear.reset_parameters()
         pass
 
-    def forward(self, x, ptr, idx, rel, num_node, num_used_node):
-        x = x[:num_used_node]
-        transformed_feat = torch.matmul(x, self.linear)
-        transformed_feat = transformed_feat.reshape(-1,
-                                                    transformed_feat.shape[-1])
-        out = aggr_rel(transformed_feat, ptr, idx, rel, num_node, self.num_rel)
-        return out
-
-
-class MyRGCNConvOpt2(torch.nn.Module):
-
-    def __init__(self, in_channels, hidden_channels, num_rel):
-        super(MyRGCNConvOpt2, self).__init__()
-        self.in_channels = in_channels
-        self.hidden_channels = hidden_channels
-        self.num_rel = num_rel
-        self.linear = torch.nn.Parameter(
-            torch.randn(num_rel, in_channels, hidden_channels))
-        self.register_parameter("rel_weight", self.linear)
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        # self.linear.reset_parameters()
-        pass
-
-    def forward(self, x, etype_partition, typed_num_node_in_layer, num_node,
-                layer_id, num_layer):
-        arr = []
-        arr_target = []
-        # print("overall", typed_num_node_in_layer)
-        for i in range(self.num_rel):
-            typed_num_node = typed_num_node_in_layer[num_layer * i +
-                                                     (num_layer - 1 -
-                                                      layer_id)]
-            sub_ptr = etype_partition[3 * i]
-            sub_idx = etype_partition[3 * i + 1]
-            sub_target = etype_partition[3 * i + 2][:typed_num_node]
-            # print(typed_num_node, sub_ptr.shape)
-            # torch.cuda.synchronize()
-            out = sage_sum_forward(x, sub_ptr, sub_idx, typed_num_node)
-            # torch.cuda.synchronize()
-            out = torch.matmul(out, self.linear[i])
-            # torch.cuda.synchronize()
-            arr.append(out)
-            arr_target.append(sub_target)
-        arr = torch.concat(arr, 0)
-        arr_target = torch.concat(arr_target, 0)
-        out = gather(arr, arr_target, num_node)
+    def forward(self, x, ptr, idx, edge_types, num_node):
+        # out = RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
+        out = run_rgcn4(x,
+                        ptr,
+                        idx,
+                        edge_types,
+                        self.linear,
+                        num_node,
+                        num_edge=edge_types.shape[0])
+        deg = ptr[1:] - ptr[:-1]
+        out = out / deg.unsqueeze(-1)[:out.shape[0]]
+        # out = self.single_linear(x)
+        # out = sage_mean_forward(out, ptr, idx, num_node)
         return out
 
 
@@ -186,7 +288,7 @@ class MyGATConv(torch.nn.Module):
                  in_channels: int,
                  out_channels: int,
                  heads: int = 1,
-                 concat: bool = True,
+                 concat: bool = False,
                  negative_slope: float = 0.2,
                  dropout: float = 0.0,
                  bias: bool = True):
@@ -201,7 +303,7 @@ class MyGATConv(torch.nn.Module):
         self.dropout = dropout
 
         self.lin_src = Parameter(
-            torch.Tensor(in_channels, heads * out_channels))
+            torch.Tensor(heads * out_channels, in_channels))
 
         self.att_src = Parameter(torch.Tensor(1, heads, out_channels))
         self.att_dst = Parameter(torch.Tensor(1, heads, out_channels))
@@ -212,7 +314,7 @@ class MyGATConv(torch.nn.Module):
             self.bias = Parameter(torch.Tensor(out_channels))
         else:
             self.bias = None
-
+        self.edge_softmax_schedule = "fused"
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -222,73 +324,121 @@ class MyGATConv(torch.nn.Module):
         if self.bias is not None:
             self.bias.data.fill_(0)
 
+    def edge_softmax_fused(self, ptr, idx, att_src, att_dst, num_edge, relu_l):
+        return edge_attention(ptr=ptr,
+                              idx=idx,
+                              att_src=att_src,
+                              att_dst=att_dst,
+                              num_edge=num_edge,
+                              relu_l=relu_l)
+
+    def edge_softmax_opwise(self, ptr, idx, att_src, att_dst, num_edge,
+                            relu_l):
+        alpha_src = torch.index_select(att_src, 0, idx[:num_edge])
+        alpha_dst = gather_csr(att_dst, ptr)
+        alpha = F.leaky_relu(alpha_src + alpha_dst, relu_l)
+        with torch.no_grad():
+            alpha_max = segment_csr(alpha, ptr, reduce='max')
+            alpha_max = gather_csr(alpha_max, ptr)
+        alpha = torch.exp(alpha - alpha_max)
+        out_sum = segment_csr(alpha, ptr, reduce='sum') + 1e-16
+        out_sum = gather_csr(out_sum, ptr)
+        edge_value = alpha / out_sum
+        return edge_value
+
+    def edge_softmax(self, ptr, idx, att_src, att_dst, num_edge, relu_l):
+        if self.edge_softmax_schedule == "fused":
+            return self.edge_softmax_fused(ptr, idx, att_src, att_dst,
+                                           num_edge, relu_l)
+        else:
+            return self.edge_softmax_opwise(ptr, idx, att_src, att_dst,
+                                            num_edge, relu_l)
+
     def forward_many(self, x, ptr, idx, num_dst, num_src, num_edge):
         H, C = self.heads, self.out_channels
         assert x.dim() == 2
-        x_src = x_dst = torch.mm(x[:num_src], self.lin_src).view(-1, H, C)
+        # x_src = x_dst = torch.mm(x[:num_src], self.lin_src).view(-1, H, C)
+        x = TimerOP.apply(x, "linear1", True)
+        x_src = x_dst = F.linear(x[:num_src], self.lin_src).view(-1, H, C)
+        x_src = TimerOP.apply(x_src, "linear1", False)
+        x_src = TimerOP.apply(x_src, "sum1", True)
         alpha_src = (x_src * self.att_src).sum(dim=-1).view(-1, H)
         alpha_dst = (x_dst[:num_dst] * self.att_dst).sum(dim=-1).view(-1, H)
-        edge_value = edge_attention(ptr=ptr,
-                                    idx=idx,
-                                    att_src=alpha_src,
-                                    att_dst=alpha_dst,
-                                    num_edge=num_edge,
-                                    relu_l=self.negative_slope)
-        out = sage_sum_forward_edge_value(x_src, ptr, idx, edge_value, num_dst)
+        alpha_dst = TimerOP.apply(alpha_dst, "sum1", False)
+        alpha_dst = TimerOP.apply(alpha_dst, "softmax1", True)
+        edge_value = self.edge_softmax(ptr=ptr,
+                                       idx=idx,
+                                       att_src=alpha_src,
+                                       att_dst=alpha_dst,
+                                       num_edge=num_edge,
+                                       relu_l=self.negative_slope)
+        edge_value = TimerOP.apply(edge_value, "softmax1", False)
+        edge_value = TimerOP.apply(edge_value, "aggregation", True)
+        # out = sage_sum_forward_edge_value(x_src, ptr, idx, edge_value, num_dst)
+        if self.heads == 1:
+            out = sage_sum_forward_edge_value(x_src, ptr, idx,
+                                              edge_value.squeeze(), num_dst)
+        else:
+            out = SpMMValOP.apply(x_src, ptr, idx, edge_value, num_dst)
+        out = TimerOP.apply(out, "aggregation", False)
         if self.concat:
             out = out.view(-1, H * C)
-        else:
+        elif out.shape[1] == self.heads:
             out = out.mean(dim=1)  # NOTE: requires out to be [-1, H, C]
+        # else: already sumed/averaged
         if self.bias is not None:
-            out += self.bias
-        return out
+            return out + self.bias
+        else:
+            return out
 
     def forward_1(self, x, ptr, idx, num_dst, num_src, num_edge):
+        x = TimerOP.apply(x, "einsum1", True)
         alpha_src = torch.einsum(
             "mn,nho,ho->mh", x,
-            self.lin_src.view(-1, self.heads, self.out_channels),
+            self.lin_src.T.view(-1, self.heads, self.out_channels),
             self.att_src.squeeze(0)).view(-1, self.heads)
         alpha_dst = torch.einsum(
             "mn,nho,ho->mh", x[:num_dst],
-            self.lin_src.view(-1, self.heads, self.out_channels),
+            self.lin_src.T.view(-1, self.heads, self.out_channels),
             self.att_dst.squeeze(0)).view(-1, self.heads)
-        edge_value = edge_attention(ptr=ptr,
-                                    idx=idx,
-                                    att_src=alpha_src,
-                                    att_dst=alpha_dst,
-                                    num_edge=num_edge,
-                                    relu_l=self.negative_slope)
+        alpha_dst = TimerOP.apply(alpha_dst, "einsum1", False)
+        alpha_dst = TimerOP.apply(alpha_dst, "softmax1", True)
+        edge_value = self.edge_softmax(ptr=ptr,
+                                       idx=idx,
+                                       att_src=alpha_src,
+                                       att_dst=alpha_dst,
+                                       num_edge=num_edge,
+                                       relu_l=self.negative_slope)
+        edge_value = TimerOP.apply(edge_value, "softmax1", False)
         if self.out_channels < self.in_channels:
-            transformed = torch.mm(x,
-                                   self.lin_src).view(-1, self.heads,
-                                                      self.out_channels)
+            x = TimerOP.apply(x, "mm1", True)
+            transformed = torch.mm(x, self.lin_src.T).view(
+                -1, self.heads, self.out_channels)
+            transformed = TimerOP.apply(transformed, "mm1", False)
+            transformed = TimerOP.apply(transformed, "aggregation", True)
             x = sage_sum_forward_edge_value(transformed, ptr, idx, edge_value,
                                             num_dst).squeeze()
+            x = TimerOP.apply(x, "aggregation", False)
         else:
+            x = TimerOP.apply(x, "aggregation", True)
             x = sage_sum_forward_edge_value(x, ptr, idx, edge_value.squeeze(),
                                             num_dst)
-            x = torch.mm(x, self.lin_src)
+            x = TimerOP.apply(x, "aggregation", False)
+            x = TimerOP.apply(x, "mm1", True)
+            x = torch.mm(x, self.lin_src.T)
+            x = TimerOP.apply(x, "mm1", False)
         if self.bias is not None:
-            x += self.bias
-        return x
+            # x += self.bias
+            return x + self.bias
+        else:
+            return x
 
     def forward(self, x, ptr, idx, num_dst, num_src, num_edge):
+        # print(x.shape, ptr.shape, idx.shape, num_dst, num_src, num_edge)
         if self.heads == 1:
             return self.forward_1(x, ptr, idx, num_dst, num_src, num_edge)
         else:
             return self.forward_many(x, ptr, idx, num_dst, num_src, num_edge)
-
-
-def gcn_norm(ptr: torch.Tensor, idx: torch.Tensor):
-    deg = ptr[1:] - ptr[:-1]  # in degree
-    # deg_from = idx.bincount()
-    # deg_from = deg_from.index_select(0, idx)
-    deg_to = deg.repeat_interleave(deg)
-    # assert(deg_to.shape == deg_from.shape)
-    # edge_value = (deg_to * deg_from).pow(-1/2)
-    edge_value = (deg_to.float()).pow(-1)
-    edge_value.masked_fill_(edge_value == float('inf'), 0.)
-    return edge_value
 
 
 class MyGCNConv(torch.nn.Module):
@@ -296,7 +446,7 @@ class MyGCNConv(torch.nn.Module):
     def __init__(self,
                  in_channels: int,
                  out_channels: int,
-                 normalize: bool = True,
+                 normalize: bool = False,
                  bias: bool = True) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -318,15 +468,42 @@ class MyGCNConv(torch.nn.Module):
         if self.bias is not None:
             self.bias.data.fill_(0)
 
+    def gcn_norm(self, ptr: torch.Tensor, idx: torch.Tensor):
+        deg = ptr[1:] - ptr[:-1]  # in degree
+        # deg_from = idx.bincount()
+        # deg_from = deg_from.index_select(0, idx)
+        deg_to = deg.repeat_interleave(deg)
+        # assert(deg_to.shape == deg_from.shape)
+        # edge_value = (deg_to * deg_from).pow(-1/2)
+        edge_value = (deg_to.float()).pow(-1)
+        edge_value.masked_fill_(edge_value == float('inf'), 0.)
+        return edge_value
+
     def forward(self, x, ptr, idx, num_node):
-        out = self.lin(x)  # order of lin and aggregation is consistent to PyG
+        x = TimerOP.apply(x, "linear", True)
+        if self.in_channels > self.out_channels:
+            out = self.lin(
+                x)  # order of lin and aggregation is consistent to PyG
+        else:
+            out = x
+        out = TimerOP.apply(out, "linear", False)
         if self.normalize:
-            edge_value = gcn_norm(ptr, idx)
+            out = TimerOP.apply(out, "aggregation", True)
+            TimerOP.apply(out, "gcn norm", True)
+            edge_value = self.gcn_norm(ptr, idx)
+            TimerOP.apply(edge_value, "gcn norm", False)
+            # print(out.shape, ptr.shape, idx.shape, edge_value.shape, num_node)
             out = sage_sum_forward_edge_value(out, ptr, idx, edge_value,
                                               num_node)
+            out = TimerOP.apply(out, "aggregation", False)
         else:
-            out = sage_sum_forward(x, ptr, idx, num_node)
+            # out = sage_sum_forward(x, ptr, idx, num_node)
+            out = AggrOP.apply(out, ptr, idx, num_node)
+
+        if self.in_channels <= self.out_channels:
+            out = self.lin(out)
 
         if self.bias is not None:
-            out += self.bias
-        return out
+            return out + self.bias
+        else:
+            return out

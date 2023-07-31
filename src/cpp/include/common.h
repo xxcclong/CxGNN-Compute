@@ -1,12 +1,16 @@
 #pragma once
 #include <cuda_runtime.h>
 #include <stdint.h>
+#include <torch/extension.h>
+#include <torch/torch.h>
 
 #include "Yaml.hpp"
 #include "spdlog/spdlog.h"
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
+#define ceil_div(a, b) (((a) + (b)-1) / (b))
+#define ceil(a, b) (((a) + (b)-1) / (b) * (b))
 
 using Index = int64_t;
 #define ASSERTWITH(condition, args...) \
@@ -31,3 +35,6 @@ using Index = int64_t;
       abort();                                              \
     }                                                       \
   } while (0)
+
+const torch::TensorOptions int64_option =
+    torch::TensorOptions().dtype(torch::kInt64).requires_grad(false);

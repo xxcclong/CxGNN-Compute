@@ -46,7 +46,7 @@ __global__ void gen_fwd_sum(Index *ptr, Index *idx, float *vin, float *vout,
     if (end - i < 32) jlimit = end - i;
     for (int j = 0; j < jlimit; ++j) {
       int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
-      if (col < INFEATURE) rs += vin[neighbor_id * INFEATURE + col];
+      if (col < INFEATURE) rs += vin[((Index)neighbor_id) * INFEATURE + col];
     }
   }
   if (col < INFEATURE) vout[row * INFEATURE + col] = rs;
@@ -490,8 +490,9 @@ __global__ void gen_bwd_sum_edge_value_multi_head_edge_grad(
   }
 }
 
-__global__ void selective_aggr(Index *ptr, Index *idx, float *vin, float *vout,
-                               bool *mask, int num_node, int INFEATURE) {
+__global__ void selective_aggr_fwd_kernel(Index *ptr, Index *idx, float *vin,
+                                          float *vout, bool *mask, int num_node,
+                                          int INFEATURE) {
   int lane = threadIdx.x & 31;
   int row = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
   int col = (threadIdx.y << 5) + lane;
@@ -517,4 +518,64 @@ __global__ void selective_aggr(Index *ptr, Index *idx, float *vin, float *vout,
     }
   }
   if (col < INFEATURE) atomicAdd(vout + row * INFEATURE + col, rs);
+}
+
+__global__ void selective_aggr_bwd_kernel(
+    Index *ptr, Index *idx, float *grads_in, float *grads_out, bool *mask,
+    Index num_node,
+    int INFEATURE)  // push the gradient to the neighbor vertex
+{
+  int lane = threadIdx.x & 31;
+  int row = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+  int col = (threadIdx.y << 5) + lane;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1];
+  float grad = 0.0f;
+  if (col < INFEATURE) {
+    grad = grads_in[row * INFEATURE + col];
+  }
+  int theidx, jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      if (mask[i + lane])
+        theidx = idx[i + lane] * INFEATURE;
+      else
+        theidx = -1;
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
+      if (neighbor_id != -1 && col < INFEATURE) {
+        atomicAdd(grads_out + neighbor_id + col, grad);
+      }
+    }
+  }
+}
+
+__global__ void target_aggr(Index *ptr, Index *idx, Index *targets, float *vin,
+                            float *vout, int num_node, int INFEATURE) {
+  int lane = threadIdx.x & 31;
+  int row = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+  int col = (threadIdx.y << 5) + lane;
+  if (row >= num_node) return;
+  Index begin = ptr[row], end = ptr[row + 1], target_id = targets[row];
+  float rs = 0.0f;
+  int theidx;
+  int jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      theidx = idx[i + lane];
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
+      if (neighbor_id != -1 && col < INFEATURE)
+        rs += vin[neighbor_id * INFEATURE + col];
+    }
+  }
+  if (col < INFEATURE) atomicAdd(vout + target_id * INFEATURE + col, rs);
 }

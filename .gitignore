@@ -134,3 +134,9 @@ outputs/*
 
 new_config.yaml
 example/new_config.yaml
+output_*
+*.pt
+input.txt
+output.txt
+*.out
+test/3-eval/*txt

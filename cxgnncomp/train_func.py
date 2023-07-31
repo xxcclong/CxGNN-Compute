@@ -37,3 +37,15 @@ def get_scheduler(config, optimizer):
         raise ValueError('Scheduler {} not supported'.format(
             config.optimizer.scheduler))
     return scheduler
+
+
+def compute_acc(pred, labels):
+    """
+    Compute the accuracy of prediction given the labels.
+    """
+    labels = labels.long()
+    return (torch.argmax(pred, dim=1) == labels).float().sum() / len(pred)
+
+
+def get_evaluator(config):
+    return compute_acc
