@@ -3,11 +3,11 @@ import cxgnncomp as cxgc
 import time
 import torch_geometric.nn as pygnn
 
-in_feat = 16
+in_feat = 32
 
 
 def prepare_data():
-    dset = "papers100M-sample-1000"
+    dset = "friendster-sample-1000"
     num_head = 1
     x, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
         dset,
@@ -45,7 +45,7 @@ def lstm_pyg():
     exit()
 
 
-lstm_pyg()
+# lstm_pyg()
 
 
 def run_lstm(module, count):
@@ -91,9 +91,9 @@ cxgc.prof("lstm neighbor op", "arxiv",
           lambda: cxgc.NeighborLstmOP(lstm_module, ptr, idx, x, count))
 cxgc.prof(
     "lstm neighbor op", "arxiv",
-    lambda: cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count, 64, 10000))
+    lambda: cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count, in_feat, 10000))
 output1 = cxgc.NeighborLstmOP(lstm_module, ptr, idx, x, count)
-output2 = cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count, 64, 10000)
+output2 = cxgc.NeighborLstmPadOP(lstm_module, ptr, idx, x, count, in_feat, 10000)
 cxgc.compare(output1, output2)
 # exit()
 

@@ -81,8 +81,8 @@ class MySageConv(torch.nn.Module):
     def forward(self, x, ptr, idx, num_node):
 
         if self.in_channels > self.hidden_channels:
-            out = self.lin_l(out)
-            out = AggrOP.apply(x, ptr, idx, num_node)
+            out = self.lin_l(x)
+            out = AggrOP.apply(out, ptr, idx, num_node)
         else:
             out = AggrOP.apply(x, ptr, idx, num_node)
             out = self.lin_l(out)

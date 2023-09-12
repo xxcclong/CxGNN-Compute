@@ -140,3 +140,6 @@ input.txt
 output.txt
 *.out
 test/3-eval/*txt
+
+test/4-cache/outputs/*
+*png

@@ -111,7 +111,7 @@ def get_dset_config(dset):
     elif "paper" in dset:
         infeat = 128
         outfeat = 64
-    elif "wiki" in dset:
+    elif "friendster" in dset:
         infeat = 128
         outfeat = 64
     else:

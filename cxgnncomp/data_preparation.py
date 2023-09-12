@@ -32,6 +32,8 @@ def prepare_data_full_graph(
     ptr = torch.from_numpy(ptr).cuda()
     idx = torch.from_numpy(idx).cuda()
     num_node = max(torch.max(idx) + 1, ptr.shape[0] - 1)
+    if feat_len == 0:
+        need_feat = False
     if ptr.shape[0] - 1 != num_node:
         new_ptr = torch.zeros([num_node + 1], dtype=torch.int64, device="cuda")
         new_ptr[:ptr.shape[0]] = ptr

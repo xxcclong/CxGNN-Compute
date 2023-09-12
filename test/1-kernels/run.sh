@@ -1,12 +1,14 @@
 # dsets=(papers100M-sample-1000 wiki90m-sample-1000)
-dsets=(arxiv products reddit papers100M-sample-1000 wiki90m-sample-1000)
+# dsets=(arxiv products reddit papers100M-sample-1000 wiki90m-sample-1000)
+dsets=(friendster-sample-1000)
 # dsets=(arxiv products reddit)
-# models=(RGCN GAT SAGE GCN)
+models=(RGCN GAT SAGE GCN)
 # dsets=(products reddit)
-models=(RGCN)
+# models=(RGCN)
 # graph_types=(PyG)
-graph_types=(PyG DGL CSR_Layer)
+# graph_types=(PyG DGL CSR_Layer)
 # graph_types=(DGL)
+graph_types=(CSR_Layer)
 
 for graph_type in ${graph_types[@]}; do
     for model in ${models[@]}; do
