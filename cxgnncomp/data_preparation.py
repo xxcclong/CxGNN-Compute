@@ -17,6 +17,29 @@ def prepare_data():
     return x, ptr, idx, batch
 
 
+def prepare_graph(dset="products",
+                  feat_len=128,
+                  num_head=1,
+                  need_edge_index=False,
+                  need_feat=True,
+                  undirected=True,
+                  num_seeds=1000,
+                  is_full_graph=True):
+    if is_full_graph:
+        return prepare_data_full_graph(dset=dset,
+                                       feat_len=feat_len,
+                                       num_head=num_head,
+                                       need_edge_index=need_edge_index,
+                                       need_feat=need_feat,
+                                       undirected=undirected)
+    else:
+        return prepare_data_sampled_graph(dset=dset,
+                                          feat_len=feat_len,
+                                          num_head=num_head,
+                                          need_edge_index=need_edge_index,
+                                          num_seeds=num_seeds)
+
+
 def prepare_data_full_graph(
     dset="products",
     feat_len=128,

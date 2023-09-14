@@ -1,6 +1,6 @@
 import torch
 import cxgnncomp as cxgc
-from cxgnncomp import MySageConv, MyGATConv, MyRGCNConv
+from cxgnncomp import MySageConv, MyGATConv, MyRGCNConv, MyGCNConv
 import cxgnncomp_backend
 from torch.profiler import profile, record_function, ProfilerActivity
 import dgl
@@ -25,21 +25,18 @@ def train(model, params, label, optimizer, lossfn):
     # timer.log_all(print)
 
 
-def test_conv_training():
-    infeat = 256
-    outfeat = 32
-    num_head = 4
+def test_conv_training(args):
+    infeat = args.infeat
+    outfeat = args.outfeat
+    num_head = args.num_head
     dev = torch.device("cuda:0")
+    dset = args.dataset
+    is_full_graph = args.is_full_graph
 
-    # dset = "arxiv"
-    # feat, ptr, idx, b = cxgc.prepare_data_full_graph(dset,
-    #                                                  feat_len=infeat,
-    #                                                  num_head=1)
-    dset = "papers100M"
-    feat, ptr, idx, b = cxgc.prepare_data_sampled_graph(dset=dset,
-                                                        feat_len=infeat,
-                                                        num_head=1,
-                                                        num_seeds=1000)
+    feat, ptr, idx, b = cxgc.prepare_graph(dset=dset,
+                                           feat_len=infeat,
+                                           num_head=num_head,
+                                           num_seeds=args.num_seeds)
     feat_label = torch.randn([ptr.shape[0] - 1, outfeat],
                              dtype=torch.float32,
                              device=dev)
@@ -47,18 +44,24 @@ def test_conv_training():
 
     cxgc.set_timers()
 
-    # conv = MyGATConv(infeat, outfeat, heads=num_head).to(dev)
-    # conv = MySageConv(infeat, outfeat).to(dev)
-    # conv = cxgc.MyGCNConv(infeat, outfeat).to(dev)
-    conv = MyRGCNConv(infeat, outfeat, num_rel=7).to(dev)
+    if args.model.lower() == "gat":
+        conv = MyGATConv(infeat, outfeat, heads=num_head).to(dev)
+    elif args.model.lower() == "gcn":
+        conv = MyGCNConv(infeat, outfeat).to(dev)
+    elif args.model.lower() == "sage":
+        conv = MySageConv(infeat, outfeat).to(dev)
+    elif args.model.lower() == "rgcn":
+        conv = MyRGCNConv(infeat, outfeat, num_rel=args.num_rel).to(dev)
+    else:
+        assert False, f"unknown model {args.model}"
     conv.reset_parameters()
     optimizer = torch.optim.Adam(conv.parameters(), lr=0.1)
     lossfn = torch.nn.MSELoss()
     torch.cuda.synchronize()
 
-    if isinstance(conv, cxgc.MyGATConv):
+    if isinstance(conv, MyGATConv):
         cxgc.prof(
-            "train conv", "gat", lambda: train(conv, [
+            "train conv", args.model, lambda: train(conv, [
                 feat, ptr, idx, b["num_node_in_layer"][-2], b[
                     "num_node_in_layer"][-1], idx.shape[0]
             ], feat_label, optimizer, lossfn))
@@ -67,12 +70,12 @@ def test_conv_training():
                                    conv.num_rel, (idx.shape[0], ),
                                    device=dev)
         cxgc.prof(
-            "train conv", "rgcn", lambda: train(conv, [
+            "train conv", args.model, lambda: train(conv, [
                 feat, ptr, idx, edge_types, b["num_node_in_layer"][-2]
             ], feat_label, optimizer, lossfn))
     else:
         cxgc.prof(
-            "train conv", "sage",
+            "train conv", args.model,
             lambda: train(conv, [feat, ptr, idx, b["num_node_in_layer"][-2]],
                           feat_label, optimizer, lossfn))
     torch.cuda.synchronize()
@@ -101,18 +104,18 @@ class PyGBatch():
 def get_dset_config(dset):
     if "arxiv" in dset:
         infeat = 128
-        outfeat = 64
+        outfeat = 40
     elif dset == "products":
-        infeat = 128
-        outfeat = 64
+        infeat = 100
+        outfeat = 47
     elif dset == "reddit":
-        infeat = 128
-        outfeat = 64
+        infeat = 602
+        outfeat = 41
     elif "paper" in dset:
         infeat = 128
-        outfeat = 64
+        outfeat = 172
     elif "friendster" in dset:
-        infeat = 128
+        infeat = 384
         outfeat = 64
     else:
         assert False, "unknown dataset"
@@ -186,8 +189,13 @@ def run_model(args, model):
     infeat, outfeat = get_dset_config(args.dataset)
     num_head = args.num_head
     dev = torch.device("cuda:0")
-    feat, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
-        dset, feat_len=infeat, num_head=1, need_edge_index=1)
+    # feat, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
+    #     dset, feat_len=infeat, num_head=1, need_edge_index=1)
+    feat, ptr, idx, b, edge_index = cxgc.prepare_graph(dset=dset,
+                                           feat_len=infeat,
+                                           num_head=num_head,
+                                           num_seeds=args.num_seeds,
+                                           need_edge_index=True)
     feat_label = torch.randn([b["num_node_in_layer"][0], outfeat],
                              dtype=torch.float32,
                              device=dev)
@@ -214,11 +222,15 @@ def run_model(args, model):
     else:
         assert False, "unknown graph type"
     print(f"ans {args.dataset} {args.model} {args.graph_type} {output[0]}")
-    # if args.model ==
 
 
-def test_model_training():
+def test_model_training(args):
     cxgc.set_timers()
+    model = get_model(args)
+    run_model(args, model)
+
+
+if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="GCN")
@@ -228,15 +240,15 @@ def test_model_training():
     parser.add_argument("--num_layer", type=int, default=3)
     parser.add_argument("--num_head", type=int, default=1)
     parser.add_argument("--num_rel", type=int, default=7)
+    parser.add_argument("--infeat", type=int, default=-1)
+    parser.add_argument("--outfeat", type=int, default=-1)
+    parser.add_argument("--is_full_graph", type=int, default=1)
+    parser.add_argument("--num_seeds", type=int, default=1000)
     args = parser.parse_args()
     print(args)
-    model = get_model(args)
-    run_model(args, model)
-
-
-if __name__ == "__main__":
-    # with profile(
-    #         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-    # test_conv_training()
-    test_model_training()
-    # prof.export_chrome_trace("trace.json")
+    if args.infeat > 0 and args.outfeat > 0:
+        print("Benchmark single conv")
+        test_conv_training(args)
+    else:
+        print("Benchmark model training")
+        test_model_training(args)

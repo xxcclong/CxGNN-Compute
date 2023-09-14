@@ -70,7 +70,7 @@ class Tuner():
                 grid_x, grid_y, block_x, block_y, rpb, cpb, cpw, grid_map, block_map = self.cache[
                     hash_str]
                 num_grid = num_node * ceil_feat_len // rpb // cpb
-                print(grid_x, type(grid_x))
+                # print(grid_x, type(grid_x))
                 grid_x = (num_grid + grid_y - 1) // grid_y
                 grid_x = (grid_x + (feat_len // rpb) -
                           1) // (feat_len // rpb) * (feat_len // rpb)
