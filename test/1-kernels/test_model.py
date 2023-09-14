@@ -1,6 +1,6 @@
 import torch
 import cxgnncomp as cxgc
-from cxgnncomp import MySageConv, MyGATConv, MyRGCNConv, MyGCNConv
+from cxgnncomp import MySageConv, MyGATConv, MyRGCNConv, MyGCNConv, get_conv_from_str, get_model_from_str
 import cxgnncomp_backend
 from torch.profiler import profile, record_function, ProfilerActivity
 import dgl
@@ -44,16 +44,7 @@ def test_conv_training(args):
 
     cxgc.set_timers()
 
-    if args.model.lower() == "gat":
-        conv = MyGATConv(infeat, outfeat, heads=num_head).to(dev)
-    elif args.model.lower() == "gcn":
-        conv = MyGCNConv(infeat, outfeat).to(dev)
-    elif args.model.lower() == "sage":
-        conv = MySageConv(infeat, outfeat).to(dev)
-    elif args.model.lower() == "rgcn":
-        conv = MyRGCNConv(infeat, outfeat, num_rel=args.num_rel).to(dev)
-    else:
-        assert False, f"unknown model {args.model}"
+    conv = get_conv_from_str(args.model, infeat, outfeat, num_head).to(dev)
     conv.reset_parameters()
     optimizer = torch.optim.Adam(conv.parameters(), lr=0.1)
     lossfn = torch.nn.MSELoss()
@@ -130,43 +121,9 @@ def get_model(args):
     infeat, outfeat = get_dset_config(args.dataset)
     dev = "cuda"
     num_head = args.num_head
-    if mtype == "GCN":
-        model = cxgc.GCN(infeat,
-                         hiddenfeat,
-                         outfeat,
-                         num_layer,
-                         dropout=0.5,
-                         graph_type=graph_type,
-                         config=None).to(dev)
-    elif mtype == "GAT":
-        model = cxgc.GAT(infeat,
-                         hiddenfeat,
-                         outfeat,
-                         num_layer,
-                         dropout=0.5,
-                         graph_type=graph_type,
-                         config=None,
-                         heads=num_head).to(dev)
-    elif mtype == "SAGE":
-        model = cxgc.SAGE(infeat,
-                          hiddenfeat,
-                          outfeat,
-                          num_layer,
-                          dropout=0.5,
-                          graph_type=graph_type,
-                          config=None).to(dev)
-    elif mtype == "RGCN":
-        model = cxgc.RGCN(infeat,
-                          hiddenfeat,
-                          outfeat,
-                          num_layer,
-                          dropout=0.5,
-                          graph_type=graph_type,
-                          config=None,
-                          num_rel=args.num_rel,
-                          dataset_name=args.dataset).to(dev)
-    else:
-        assert False, "unknown model"
+    model = get_model_from_str(mtype, infeat, hiddenfeat, outfeat, graph_type, 
+                               num_layer, num_head, args.num_rel,
+                               args.dataset).to(dev)
     return model
 
 
@@ -189,13 +146,12 @@ def run_model(args, model):
     infeat, outfeat = get_dset_config(args.dataset)
     num_head = args.num_head
     dev = torch.device("cuda:0")
-    # feat, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
-    #     dset, feat_len=infeat, num_head=1, need_edge_index=1)
-    feat, ptr, idx, b, edge_index = cxgc.prepare_graph(dset=dset,
-                                           feat_len=infeat,
-                                           num_head=num_head,
-                                           num_seeds=args.num_seeds,
-                                           need_edge_index=True)
+    feat, ptr, idx, b, edge_index = cxgc.prepare_graph(
+        dset=dset,
+        feat_len=infeat,
+        num_head=num_head,
+        num_seeds=args.num_seeds,
+        need_edge_index=True)
     feat_label = torch.randn([b["num_node_in_layer"][0], outfeat],
                              dtype=torch.float32,
                              device=dev)

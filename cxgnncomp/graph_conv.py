@@ -253,6 +253,7 @@ class MyRGCNConv(torch.nn.Module):
         self.in_channels = in_channels
         self.hidden_channels = hidden_channels
         self.num_rel = num_rel
+        assert num_rel > 0
         self.linear = torch.nn.Parameter(
             torch.randn(num_rel, in_channels, hidden_channels))
         log.info("linear shape: {}".format(self.linear.shape))
@@ -298,6 +299,7 @@ class MyGATConv(torch.nn.Module):
         # if out_channels % heads != 0:
         #     heads = 1
         self.heads = heads
+        assert heads > 0
         self.concat = concat
         self.negative_slope = negative_slope
         self.dropout = dropout

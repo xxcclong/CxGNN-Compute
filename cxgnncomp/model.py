@@ -331,3 +331,58 @@ def get_model(config):
             in_channel, hidden_channel, out_channel, num_layers, dropout,
             graph_type, config)
     return model
+
+def get_conv_from_str(model_str, infeat, outfeat, num_head=-1, num_rel=-1):
+    model_str = model_str.lower()
+    if model_str == "gat":
+        conv = MyGATConv(infeat, outfeat, heads=num_head)
+    elif model_str == "gcn":
+        conv = MyGCNConv(infeat, outfeat)
+    elif model_str == "sage":
+        conv = MySageConv(infeat, outfeat)
+    elif model_str == "rgcn":
+        conv = MyRGCNConv(infeat, outfeat, num_rel=num_rel)
+    else:
+        assert False, f"unknown model {model_str}"
+    return conv 
+
+def get_model_from_str(mtype, infeat, hiddenfeat, outfeat, graph_type, num_layer, num_head=-1, num_rel=-1, dataset=None):
+    mtype = mtype.upper()
+    if mtype == "GCN":
+        model = GCN(infeat,
+                         hiddenfeat,
+                         outfeat,
+                         num_layer,
+                         dropout=0.5,
+                         graph_type=graph_type,
+                         config=None)
+    elif mtype == "GAT":
+        model = GAT(infeat,
+                         hiddenfeat,
+                         outfeat,
+                         num_layer,
+                         dropout=0.5,
+                         graph_type=graph_type,
+                         config=None,
+                         heads=num_head)
+    elif mtype == "SAGE":
+        model = SAGE(infeat,
+                          hiddenfeat,
+                          outfeat,
+                          num_layer,
+                          dropout=0.5,
+                          graph_type=graph_type,
+                          config=None)
+    elif mtype == "RGCN":
+        model = RGCN(infeat,
+                          hiddenfeat,
+                          outfeat,
+                          num_layer,
+                          dropout=0.5,
+                          graph_type=graph_type,
+                          config=None,
+                          num_rel=num_rel,
+                          dataset_name=dataset)
+    else:
+        assert False, f"unknown model {mtype}"
+    return model
