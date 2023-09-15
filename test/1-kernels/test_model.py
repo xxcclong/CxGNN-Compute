@@ -1,6 +1,6 @@
 import torch
 import cxgnncomp as cxgc
-from cxgnncomp import MySageConv, MyGATConv, MyRGCNConv, MyGCNConv, get_conv_from_str, get_model_from_str
+from cxgnncomp import MySageConv, MyGATConv, MyRGCNConv, MyGCNConv, get_conv_from_str, get_model_from_str, Batch, PyGBatch
 import cxgnncomp_backend
 from torch.profiler import profile, record_function, ProfilerActivity
 import dgl
@@ -75,22 +75,6 @@ def test_conv_training(args):
     #                         [ptr, idx, feat, ptr.shape[0] - 1])
 
 
-class Batch():
-
-    def __init__(self, x, ptr, idx, num_node_in_layer, num_edge_in_layer=None):
-        self.x = x
-        self.ptr = ptr
-        self.idx = idx
-        self.num_node_in_layer = num_node_in_layer
-        self.num_edge_in_layer = num_edge_in_layer
-
-
-class PyGBatch():
-
-    def __init__(self, x, edge_index):
-        self.x = x
-        self.edge_index = edge_index
-
 
 def get_dset_config(dset):
     if "arxiv" in dset:
@@ -151,6 +135,7 @@ def run_model(args, model):
         feat_len=infeat,
         num_head=num_head,
         num_seeds=args.num_seeds,
+        is_full_graph=args.is_full_graph,
         need_edge_index=True)
     feat_label = torch.randn([b["num_node_in_layer"][0], outfeat],
                              dtype=torch.float32,
