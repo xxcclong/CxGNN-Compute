@@ -15,10 +15,23 @@ def setup(rank, world_size):
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 
+def check():
+    assert torch.max(graph.idx) < feat.shape[
+        0], f"{rank} {i} {feat.shape} {graph.idx.shape} {torch.max(graph.idx)} {num_total_node}"
+    assert graph.ptr[-1] == graph.idx.shape[
+        0], f"{rank} {i} {graph.ptr[-1]} {graph.idx.shape[0]} {num_total_node}"
+    assert graph.ptr.device == local_feat.device
+    assert graph.idx.device == local_feat.device
+    assert graph.target.device == local_feat.device
+    assert graph.target.shape[0] == graph.ptr.shape[0] - 1
+    assert torch.max(graph.target) < local_feat.shape[
+        0], f"{rank} {i} {torch.max(graph.target)} {local_feat.shape[0]} {num_total_node}"
+
+
 class Model(cxgc.GNN):
 
     def __init__(self, in_channels, hidden_channels, out_channels, num_layer,
-                 dropout, graph_type, num_device, **kwargs):
+                 dropout, graph_type, num_device, rank, **kwargs):
         super().__init__(in_channels,
                          hidden_channels,
                          out_channels,
@@ -28,16 +41,21 @@ class Model(cxgc.GNN):
                          config=None,
                          **kwargs)
         self.num_device = num_device
-        self.linears = torch.nn.ModuleList()
-        self.linears.append(torch.nn.Linear(in_channels, hidden_channels))
+        self.linears = []
+        self.linears.append(
+            torch.nn.Linear(in_channels, hidden_channels).cuda(rank))
+        self.channels = [self.in_channels]
         for i in range(num_layer - 2):
             self.linears.append(
-                torch.nn.Linear(hidden_channels, hidden_channels))
-        self.linears.append(torch.nn.Linear(hidden_channels, out_channels))
+                torch.nn.Linear(hidden_channels, hidden_channels).cuda(rank))
+            self.channels.append(hidden_channels)
+        self.linears.append(
+            torch.nn.Linear(hidden_channels, out_channels).cuda(rank))
+        self.channels.append(hidden_channels)
 
     def reset_parameters(self):
-        for conv in self.convs:
-            conv.reset_parameters()
+        for linear in self.linears:
+            linear.reset_parameters()
 
     def forward_roc(self, batch):
         x = batch.x
@@ -52,37 +70,32 @@ class Model(cxgc.GNN):
 
     def forward_cxg(self, graphs, rank, local_feat, num_total_node):
         # init layer
-        output = torch.zeros(
-            [local_feat.shape[0],
-             min(self.in_channels, self.hidden_channels)],
-            device=local_feat.device)
-        for i in range(self.num_device):
-            graph = graphs[i]
-            if i == rank:
-                feat = local_feat
-            else:
-                num_remote_node = num_total_node // self.num_device
-                if i == self.num_device - 1:
-                    num_remote_node += num_total_node % self.num_device
-                feat = torch.empty(size=[num_remote_node, self.in_channels],
-                                   device=local_feat.device)
-            # print(rank, feat)
-            # print(rank, feat.shape)
-            dist.broadcast(feat, i)
-            # print(rank, feat)
-            assert torch.max(graph.idx) < feat.shape[
-                0], f"{rank} {i} {feat.shape} {graph.idx.shape} {torch.max(graph.idx)} {num_total_node}"
-            assert graph.ptr[-1] == graph.idx.shape[
-                0], f"{rank} {i} {graph.ptr[-1]} {graph.idx.shape[0]} {num_total_node}"
-            assert graph.ptr.device == local_feat.device
-            assert graph.idx.device == local_feat.device
-            assert graph.target.device == local_feat.device
-            assert graph.target.shape[0] == graph.ptr.shape[0] - 1
-            assert torch.max(graph.target) < local_feat.shape[
-                0], f"{rank} {i} {torch.max(graph.target)} {local_feat.shape[0]} {num_total_node}"
-            cxgnncomp_backend.target_aggr(feat, graph.ptr, graph.idx,
-                                          graph.target, output,
-                                          graph.ptr.shape[0] - 1)
+        input_emb = local_feat
+        local_num_node = input_emb.shape[0]
+        device = input_emb.device
+        for l in range(self.num_layer):
+            output = torch.zeros([local_num_node, input_emb.shape[1]],
+                                 device=device)
+            for i in range(self.num_device):
+                graph = graphs[i]
+                if i == rank:
+                    feat = input_emb
+                else:
+                    num_remote_node = num_total_node // self.num_device if i != self.num_device - 1 else num_total_node // self.num_device + (
+                        num_total_node % self.num_device)
+                    feat = torch.empty(
+                        size=[num_remote_node, self.channels[l]],
+                        device=local_feat.device)
+                dist.broadcast(feat, i)
+                cxgnncomp_backend.target_aggr(feat, graph.ptr, graph.idx,
+                                              graph.target, output,
+                                              graph.ptr.shape[0] - 1)
+            del feat
+            # torch.cuda.synchronize(rank)
+            # print(
+            #     f"rank {rank} layer {l} output {output.shape} num_layer {self.num_layer}"
+            # )
+            input_emb = self.linears[l](output)
 
     def forward(self, graphs, rank, local_feat, num_total_node):
         if self.graph_type.lower() == "csr_layer":
@@ -130,7 +143,9 @@ def run(rank, world_size, args):
         dropout=0.5,
         graph_type=args.graph_type,
         num_device=args.num_device,
-    ).to(rank)
+        rank=rank,
+    )
+    model.reset_parameters()
 
     # reorder graph for locality
     if args.reorder_file != "":

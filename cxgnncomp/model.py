@@ -12,7 +12,7 @@ import cxgnncomp_backend
 
 class GNN(torch.nn.Module):
 
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layer,
                  dropout, graph_type, config, **kwargs):
         super().__init__()
         self.in_channels = in_channels
@@ -20,8 +20,8 @@ class GNN(torch.nn.Module):
         self.out_channels = out_channels
         self.graph_type = graph_type
         self.bns = torch.nn.ModuleList()
-        self.num_layers = num_layers
-        for _ in range(self.num_layers - 1):
+        self.num_layer = num_layer
+        for _ in range(self.num_layer - 1):
             self.bns.append(torch.nn.BatchNorm1d(hidden_channels))
         self.dropout = dropout
         self.init_convs(**kwargs)
@@ -30,11 +30,11 @@ class GNN(torch.nn.Module):
         self.convs = torch.nn.ModuleList()
         self.convs.append(
             self.init_conv(self.in_channels, self.hidden_channels, **kwargs))
-        for _ in range(self.num_layers - 2):
+        for _ in range(self.num_layer - 2):
             self.convs.append(
                 self.init_conv(self.hidden_channels, self.hidden_channels,
                                **kwargs))
-        if self.num_layers > 1:
+        if self.num_layer > 1:
             self.convs.append(
                 self.init_conv(self.hidden_channels, self.out_channels,
                                **kwargs))
@@ -53,7 +53,7 @@ class GNN(torch.nn.Module):
         x = batch.x
         for i, conv in enumerate(self.convs[:-1]):
             if self.graph_type == "CSR_Layer":
-                num_node = batch.num_node_in_layer[self.num_layers - 1 - i]
+                num_node = batch.num_node_in_layer[self.num_layer - 1 - i]
             else:
                 num_node = 0
             x = conv(x, batch.ptr, batch.idx, num_node)
@@ -165,15 +165,15 @@ class RGCN(GNN):
         else:
             etypes = torch.randint(
                 0,
-                self.num_rel, (batch.num_edge_in_layer[self.num_layers - 1], ),
+                self.num_rel, (batch.num_edge_in_layer[self.num_layer - 1], ),
                 device=x.device)
         for i, conv in enumerate(self.convs[:-1]):
             if self.graph_type == "CSR_Layer":
-                num_node = batch.num_node_in_layer[self.num_layers - 1 - i]
+                num_node = batch.num_node_in_layer[self.num_layer - 1 - i]
             else:
                 num_node = 0
             x = conv(x, batch.ptr, batch.idx,
-                     etypes[:batch.num_edge_in_layer[self.num_layers - 1 - i]],
+                     etypes[:batch.num_edge_in_layer[self.num_layer - 1 - i]],
                      num_node)
             x = self.bns[i](x)
             x = F.relu(x)
@@ -246,9 +246,9 @@ class GAT(GNN):
         x = batch.x
         assert self.graph_type == "CSR_Layer"
         for i, conv in enumerate(self.convs[:-1]):
-            num_dst = batch.num_node_in_layer[self.num_layers - 1 - i]
-            num_src = batch.num_node_in_layer[self.num_layers - i]
-            num_edge = batch.num_edge_in_layer[self.num_layers - 1 - i]
+            num_dst = batch.num_node_in_layer[self.num_layer - 1 - i]
+            num_src = batch.num_node_in_layer[self.num_layer - i]
+            num_edge = batch.num_edge_in_layer[self.num_layer - 1 - i]
             x = conv(x,
                      batch.ptr,
                      batch.idx,
@@ -300,7 +300,7 @@ def get_model(config):
     in_channel = config.dl.dataset.feature_dim
     out_channel = config.dl.dataset.num_classes
     hidden_channel = config.train.model.hidden_dim
-    num_layers = config.train.model.num_layers
+    num_layer = config.train.model.num_layer
     dropout = config.train.model.dropout
     graph_type = graph_type_dict[config.train.type.lower()]
     if "gat" in config.train.model.type.lower():
@@ -309,7 +309,7 @@ def get_model(config):
         model = model_dict[config.train.model.type.lower()](in_channel,
                                                             hidden_channel,
                                                             out_channel,
-                                                            num_layers,
+                                                            num_layer,
                                                             dropout,
                                                             graph_type,
                                                             config,
@@ -321,17 +321,20 @@ def get_model(config):
             in_channel,
             hidden_channel,
             out_channel,
-            num_layers,
+            num_layer,
             dropout,
             graph_type,
             config,
             num_rel=rel,
             dataset_name=config.dl.dataset.name.lower())
     else:
-        model = model_dict[config.train.model.type.lower()](
-            in_channel, hidden_channel, out_channel, num_layers, dropout,
-            graph_type, config)
+        model = model_dict[config.train.model.type.lower()](in_channel,
+                                                            hidden_channel,
+                                                            out_channel,
+                                                            num_layer, dropout,
+                                                            graph_type, config)
     return model
+
 
 def get_conv_from_str(model_str, infeat, outfeat, num_head=-1, num_rel=-1):
     model_str = model_str.lower()
@@ -345,45 +348,54 @@ def get_conv_from_str(model_str, infeat, outfeat, num_head=-1, num_rel=-1):
         conv = MyRGCNConv(infeat, outfeat, num_rel=num_rel)
     else:
         assert False, f"unknown model {model_str}"
-    return conv 
+    return conv
 
-def get_model_from_str(mtype, infeat, hiddenfeat, outfeat, graph_type, num_layer, num_head=-1, num_rel=-1, dataset=None):
+
+def get_model_from_str(mtype,
+                       infeat,
+                       hiddenfeat,
+                       outfeat,
+                       graph_type,
+                       num_layer,
+                       num_head=-1,
+                       num_rel=-1,
+                       dataset=None):
     mtype = mtype.upper()
     if mtype == "GCN":
         model = GCN(infeat,
-                         hiddenfeat,
-                         outfeat,
-                         num_layer,
-                         dropout=0.5,
-                         graph_type=graph_type,
-                         config=None)
+                    hiddenfeat,
+                    outfeat,
+                    num_layer,
+                    dropout=0.5,
+                    graph_type=graph_type,
+                    config=None)
     elif mtype == "GAT":
         model = GAT(infeat,
-                         hiddenfeat,
-                         outfeat,
-                         num_layer,
-                         dropout=0.5,
-                         graph_type=graph_type,
-                         config=None,
-                         heads=num_head)
+                    hiddenfeat,
+                    outfeat,
+                    num_layer,
+                    dropout=0.5,
+                    graph_type=graph_type,
+                    config=None,
+                    heads=num_head)
     elif mtype == "SAGE":
         model = SAGE(infeat,
-                          hiddenfeat,
-                          outfeat,
-                          num_layer,
-                          dropout=0.5,
-                          graph_type=graph_type,
-                          config=None)
+                     hiddenfeat,
+                     outfeat,
+                     num_layer,
+                     dropout=0.5,
+                     graph_type=graph_type,
+                     config=None)
     elif mtype == "RGCN":
         model = RGCN(infeat,
-                          hiddenfeat,
-                          outfeat,
-                          num_layer,
-                          dropout=0.5,
-                          graph_type=graph_type,
-                          config=None,
-                          num_rel=num_rel,
-                          dataset_name=dataset)
+                     hiddenfeat,
+                     outfeat,
+                     num_layer,
+                     dropout=0.5,
+                     graph_type=graph_type,
+                     config=None,
+                     num_rel=num_rel,
+                     dataset_name=dataset)
     else:
         assert False, f"unknown model {mtype}"
     return model
