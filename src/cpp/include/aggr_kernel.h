@@ -78,3 +78,7 @@ __global__ void selective_aggr_bwd_kernel(Index *ptr, Index *idx,
 
 __global__ void target_aggr(Index *ptr, Index *idx, Index *targets, float *vin,
                             float *vout, int num_node, int INFEATURE);
+
+
+__global__ void target_aggr_backward(Index *ptr, Index *idx, Index *targets, const float *grads_in,
+                            float *grads_out, int num_node, int INFEATURE);

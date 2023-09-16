@@ -28,6 +28,55 @@ def check():
         0], f"{rank} {i} {torch.max(graph.target)} {local_feat.shape[0]} {num_total_node}"
 
 
+class DistAggrOP(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input_emb, graphs, num_total_node, num_device, rank):
+        ctx.graphs = graphs
+        ctx.num_total_node = num_total_node
+        ctx.num_device = num_device
+        ctx.rank = rank
+        ctx.local_node = input_emb.shape[0]
+        # ctx.save_for_backward(num_total_node, num_device, rank)
+        output = torch.zeros_like(input_emb)
+        for i in range(num_device):
+            graph = graphs[i]
+            if i == rank:
+                feat = input_emb
+            else:
+                num_remote_node = num_total_node // num_device if i != num_device - 1 else num_total_node // num_device + (
+                    num_total_node % num_device)
+                feat = torch.empty(size=[num_remote_node, input_emb.shape[1]],
+                                   device=input_emb.device)
+            dist.broadcast(feat, i)
+            cxgnncomp_backend.target_aggr(feat, graph.ptr, graph.idx,
+                                          graph.target, output,
+                                          graph.ptr.shape[0] - 1)
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_in):
+        graphs = ctx.graphs
+        num_total_node = ctx.num_total_node
+        num_device = ctx.num_device
+        rank = ctx.rank
+        local_node = ctx.local_node
+        final_grad = None
+        for i in range(num_device):
+            grad_out = torch.zeros([local_node, grad_in.shape[1]],
+                                   device=grad_in.device)
+            graph = graphs[i]
+            cxgnncomp_backend.target_aggr_backward(grad_in, graph.ptr,
+                                                   graph.idx, graph.target,
+                                                   grad_out,
+                                                   graph.ptr.shape[0] - 1)
+            dist.reduce(grad_out, i)
+            if i == rank:
+                final_grad = grad_out
+
+        return final_grad, None, None, None, None
+
+
 class Model(cxgc.GNN):
 
     def __init__(self, in_channels, hidden_channels, out_channels, num_layer,
@@ -74,32 +123,16 @@ class Model(cxgc.GNN):
         local_num_node = input_emb.shape[0]
         device = input_emb.device
         for l in range(self.num_layer):
-            output = torch.zeros([local_num_node, input_emb.shape[1]],
-                                 device=device)
-            for i in range(self.num_device):
-                graph = graphs[i]
-                if i == rank:
-                    feat = input_emb
-                else:
-                    num_remote_node = num_total_node // self.num_device if i != self.num_device - 1 else num_total_node // self.num_device + (
-                        num_total_node % self.num_device)
-                    feat = torch.empty(
-                        size=[num_remote_node, self.channels[l]],
-                        device=local_feat.device)
-                dist.broadcast(feat, i)
-                cxgnncomp_backend.target_aggr(feat, graph.ptr, graph.idx,
-                                              graph.target, output,
-                                              graph.ptr.shape[0] - 1)
-            del feat
-            # torch.cuda.synchronize(rank)
-            # print(
-            #     f"rank {rank} layer {l} output {output.shape} num_layer {self.num_layer}"
-            # )
+            # output = torch.zeros([local_num_node, input_emb.shape[1]],
+            #  device=device)
+            output = DistAggrOP.apply(input_emb, graphs, num_total_node,
+                                      self.num_device, rank)
             input_emb = self.linears[l](output)
+        return input_emb
 
     def forward(self, graphs, rank, local_feat, num_total_node):
         if self.graph_type.lower() == "csr_layer":
-            self.forward_cxg(graphs, rank, local_feat, num_total_node)
+            return self.forward_cxg(graphs, rank, local_feat, num_total_node)
         else:
             print(self.graph_type.lower())
             raise NotImplementedError
@@ -111,10 +144,10 @@ def train(graphs, rank, local_feat, model, optimizer, lossfn, num_total_node):
     # forward
     output = model(graphs, rank, local_feat, num_total_node)
     # loss
-    # loss = lossfn(output, torch.randn_like(output))
+    loss = lossfn(output, torch.randn_like(output))
     # backward
-    # loss.backward()
-    # optimizer.step()
+    loss.backward()
+    optimizer.step()
     torch.cuda.synchronize(rank)
     # if rank == 0:
     print("time elapsed: ", rank, time.time() - t0)
