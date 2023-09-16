@@ -40,7 +40,8 @@ class GNN(torch.nn.Module):
                                **kwargs))
 
     def init_conv(self, in_channels, out_channels, **kwargs):
-        raise NotImplementedError
+        pass
+        # raise NotImplementedError
 
     def reset_parameters(self):
         for conv in self.convs:
