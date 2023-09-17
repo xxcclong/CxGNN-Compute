@@ -11,20 +11,44 @@ def run(args):
         num_head=args.num_head,
         num_seeds=args.num_seeds,
         need_edge_index=1,
-        is_full_graph=args.is_full_graph,
+        is_full_graph=2,
         need_feat=False,
-        device="cpu")
+        device="cpu",
+        rank=0)
+    visit_mask = b["visit_mask"]
     # rank_dst = 0
     num_edge = 0
     num_total_edge = idx.shape[0]
     for i in range(args.num_device):
         for j in range(args.num_device):
-            ptr, idx, target = cxgc.partition_2d_gpu(edge_index, args.num_device, i, j)
+            ptr, idx, target = cxgc.partition_2d_gpu(edge_index,
+                                                     args.num_device, i, j)
             print(ptr.shape, idx.shape, target.shape)
             num_edge += idx.shape[0]
     assert num_edge == num_total_edge, f"{num_edge} {num_total_edge}"
 
+    num_edges = []
+    for l in range(3):
+        num_edge = 0
+        num_node = 0
+        for i in range(args.num_device):
+            for j in range(args.num_device):
+                ptr, idx, target = cxgc.partition_2d_gpu_layered(
+                    edge_index, args.num_device, i, j, visit_mask, l)
+                # print(ptr.shape, idx.shape)
+                num_edge += idx.shape[0]
+                num_node += ptr.shape[0] - 1
+        # print(num_edge, num_node)
+        num_edges.append(num_edge)
 
+    validate_num_edges = []
+    for l in range(3):
+        validate_num_edges.append(
+            edge_index[:,
+                       torch.logical_and(visit_mask[edge_index[0]] >= l,
+                                         visit_mask[edge_index[1]] >= l +
+                                         1)].shape[1])
+    assert num_edges == validate_num_edges, f"{num_edges} {validate_num_edges}"
 
 
 if __name__ == "__main__":
