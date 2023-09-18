@@ -83,14 +83,17 @@ def partition_2d_gpu_layered(edge_index,
     assert degree.shape[0] == num_node
     new_degree = degree[degree > 0]
     target_ids = target_ids[degree > 0]
+    # map to local target id
+    target_ids = torch.searchsorted(visit_dst_ids,
+                                    target_ids) - lower_bound_dst
     degree = new_degree
+    # generate new ptr
     new_ptr = torch.cumsum(degree, dim=0).to(torch.int64)
     new_ptr = torch.cat(
         [torch.tensor([0], dtype=torch.int64, device=new_ptr.device), new_ptr])
-    _, indices = torch.sort(edge_index[1], descending=True)
-    new_idx = edge_index[0][indices]
     # map to local id
+    _, indices = torch.sort(edge_index[1], descending=True)
+    new_idx = edge_index[0][indices]  # sort by dst ID
     new_idx = torch.searchsorted(visit_src_ids, new_idx) - lower_bound_src
-    target_ids = torch.searchsorted(visit_dst_ids, target_ids) - lower_bound_dst
     assert torch.all(new_idx < upper_bound_src)
     return new_ptr, new_idx, target_ids

@@ -137,7 +137,7 @@ def prepare_data_full_graph_training_set(dset="products",
     num_node_in_layer = []
     num_node_in_layer.append((training_nodes.abs() > 1e-6).sum().item())
     torch.cuda.set_device(rank)
-    visit_mask = torch.ones(num_node, device=device) * -1
+    visit_mask = torch.ones(num_node, device=device, dtype=torch.int32) * -1
     if device.lower() == "cpu":
         training_nodes = training_nodes.to(rank)
         ptr = ptr.to(rank)
@@ -227,7 +227,8 @@ def prepare_data_sampled_graph(dset,
     batch["num_node_in_layer"] = num_node_in_layer
     batch["num_edge_in_layer"] = num_edge_in_layer
     batch["sub_to_full"] = input_nodes.to(device)
-    print(ptr.shape, idx.shape, x.shape, batch["num_node_in_layer"])
+    print("dataset prepared", ptr.shape, idx.shape, x.shape,
+          batch["num_node_in_layer"])
     if need_edge_index:
         edge_index = torch.stack([
             idx,

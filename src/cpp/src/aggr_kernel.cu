@@ -574,7 +574,7 @@ __global__ void target_aggr(Index *ptr, Index *idx, Index *targets, float *vin,
     for (int j = 0; j < jlimit; ++j) {
       int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
       if (neighbor_id != -1 && col < INFEATURE)
-        rs += vin[neighbor_id * INFEATURE + col];
+        rs += vin[((Index)neighbor_id) * INFEATURE + col];
     }
   }
   if (col < INFEATURE) atomicAdd(vout + target_id * INFEATURE + col, rs);
@@ -601,7 +601,7 @@ __global__ void target_aggr_backward(Index *ptr, Index *idx, Index *targets, con
       int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
       if (neighbor_id != -1 && col < INFEATURE)
         // rs += vin[neighbor_id * INFEATURE + col];
-        atomicAdd(grads_out + neighbor_id * INFEATURE + col, grad);
+        atomicAdd(grads_out + ((Index)neighbor_id) * INFEATURE + col, grad);
     }
   }
 }
