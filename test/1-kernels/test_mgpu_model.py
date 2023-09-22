@@ -106,9 +106,6 @@ class DistAggrOPDensify(torch.autograd.Function):
                                       graphs[rank].idx.to(torch.int64),
                                       graphs[rank].target.to(torch.int64),
                                       output, graphs[rank].ptr.shape[0] - 1)
-        print(
-            f"rank {rank} input_emb {input_emb.shape} {input_emb.numel()} output {output.shape} {output.numel()}"
-        )
         torch.cuda.synchronize(rank)
         for receiver in range(num_device):
             for sender in range(num_device):
@@ -133,6 +130,9 @@ class DistAggrOPDensify(torch.autograd.Function):
                     if receiver == rank:
                         continue
                     else:
+                        print(
+                            f"rank {rank} send to {receiver} {torch.cuda.memory_allocated(rank)} {ctx.idx_needed_layered[receiver].shape} {input_emb.shape}",
+                            flush=True)
                         torch.cuda.synchronize(rank)
                         buf = input_emb[ctx.idx_needed_layered[receiver]]
                         torch.cuda.synchronize(rank)
@@ -168,7 +168,7 @@ class DistAggrOPDensify(torch.autograd.Function):
                                       device=grad_in.device)
                     dist.recv(buf, sender)
                     torch.cuda.synchronize(rank)
-                    grad_out[idx_needed_layered[sender]] += buf
+                    grad_out.index_add_(0, idx_needed_layered[sender], buf)
                     torch.cuda.synchronize(rank)
                     del buf
                 elif sender == rank:
@@ -232,7 +232,7 @@ class Model(cxgc.GNN):
         return x
 
     def forward_cxg(self, graphs, rank, local_feat, num_node_in_layer,
-                    idx_needed_layered):
+                    idx_needed_layered, skip_input):
         # init layer
         input_emb = local_feat
         for l in range(self.num_layer):
@@ -246,31 +246,35 @@ class Model(cxgc.GNN):
             #                           num_node_in_layer[-1 - l],
             #                           num_node_in_layer[-1 - l - 1],
             #                           self.num_device, rank)
-            output = DistAggrOPDensify.apply(input_emb, graphs[l],
-                                             num_node_in_layer[-1 - l],
-                                             num_node_in_layer[-1 - l - 1],
-                                             self.num_device, rank,
-                                             idx_needed_layered[l])
+            if skip_input and l == 0:
+                output = input_emb
+            else:
+                output = DistAggrOPDensify.apply(input_emb, graphs[l],
+                                                 num_node_in_layer[-1 - l],
+                                                 num_node_in_layer[-1 - l - 1],
+                                                 self.num_device, rank,
+                                                 idx_needed_layered[l])
             input_emb = self.linears[l](output)
         return input_emb
 
     def forward(self, graphs, rank, local_feat, num_node_in_layer,
-                idx_needed_layered):
+                idx_needed_layered, skip_input):
         if self.graph_type.lower() == "csr_layer":
             return self.forward_cxg(graphs, rank, local_feat,
-                                    num_node_in_layer, idx_needed_layered)
+                                    num_node_in_layer, idx_needed_layered,
+                                    skip_input)
         else:
             print(self.graph_type.lower())
             raise NotImplementedError
 
 
 def train(graphs, rank, local_feat, model, optimizer, lossfn,
-          num_node_in_layer, idx_needed_layered):
+          num_node_in_layer, idx_needed_layered, skip_input):
     t0 = time.time()
     optimizer.zero_grad()
     # forward
     output = model(graphs, rank, local_feat, num_node_in_layer,
-                   idx_needed_layered)
+                   idx_needed_layered, skip_input)
     # loss
     loss = lossfn(output, torch.randn_like(output))
     # backward
@@ -384,6 +388,8 @@ def run(rank, world_size, args):
     else:
         graphs_in_layer = [[] for _ in range(args.num_layer)]
         for l in range(args.num_layer):
+            if args.skip_input and l == 0:
+                continue
             for i in range(args.num_device):
                 b = cxgc.Batch(x=None, ptr=None, idx=None, target=None)
                 b.fromfile(
@@ -395,6 +401,8 @@ def run(rank, world_size, args):
                 print("num_node_in_layer", num_node_in_layer)
 
     for l in range(args.num_layer):
+        if args.skip_input and l == 0:
+            continue
         for it, item in enumerate(graphs_in_layer[l]):
             item.to(rank)
             item.ptr = item.ptr.to(torch.int32)
@@ -408,6 +416,8 @@ def run(rank, world_size, args):
 
     idx_needed_layered = [[] for _ in range(args.num_layer)]
     for l in range(args.num_layer):
+        if args.skip_input and l == 0:
+            continue
         for j in range(args.num_device):
             if j == rank:
                 idx_needed_layered[l].append(None)
@@ -425,13 +435,17 @@ def run(rank, world_size, args):
     lossfn = torch.nn.MSELoss()
 
     # prepare local features
+    if args.skip_input:
+        num_total_node = num_node_in_layer[-2]
+    else:
+        num_total_node = num_node_in_layer[-1]
     if rank != world_size - 1:
-        local_feat = torch.randn(
-            [num_node_in_layer[-1] // world_size, args.infeat]).to(rank)
+        local_feat = torch.randn([num_total_node // world_size,
+                                  args.infeat]).to(rank)
     else:
         local_feat = torch.randn([
-            num_node_in_layer[-1] // world_size +
-            (num_node_in_layer[-1] % world_size), args.infeat
+            num_total_node // world_size + (num_total_node % world_size),
+            args.infeat
         ]).to(rank)
 
     # if rank == 0:
@@ -440,7 +454,7 @@ def run(rank, world_size, args):
     # train
     for i in range(args.num_epoch):
         train(graphs_in_layer, rank, local_feat, model, optimizer, lossfn,
-              num_node_in_layer, idx_needed_layered)
+              num_node_in_layer, idx_needed_layered, args.skip_input)
         torch.cuda.empty_cache()
 
     dist.destroy_process_group()
@@ -466,6 +480,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_device", type=int, default=4)
     parser.add_argument("--num_epoch", type=int, default=10)
     parser.add_argument("--gen_cache", type=int, default=0)
+    parser.add_argument("--skip_input", type=int, default=0)
     args = parser.parse_args()
     print(args)
     mp.spawn(run,
