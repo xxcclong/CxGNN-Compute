@@ -7,6 +7,8 @@ import torch.multiprocessing as mp
 import cxgnncomp_backend
 import os
 import logging
+import dgl
+import dgl.function as fn
 
 logger = logging.getLogger(__name__)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
@@ -40,7 +42,7 @@ class P3DistAggrOP(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input_emb, weight, graphs, num_src_node, num_dst_node,
-                num_device, rank, layer):
+                num_device, rank):
         ctx.graphs = graphs
         ctx.num_device = num_device
         ctx.rank = rank
@@ -105,12 +107,13 @@ class DistAggrOP(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input_emb, graphs, num_src_node, num_dst_node, num_device,
-                rank, layer):
+                rank, layer, profile, graph_type):
         ctx.graphs = graphs
         ctx.num_device = num_device
         ctx.rank = rank
         ctx.num_local_src_node = input_emb.shape[0]
         ctx.layer = layer
+        ctx.profile = profile
         num_local_dst_node = num_dst_node // num_device if rank != num_device - 1 else num_dst_node // num_device + (
             num_dst_node % num_device)
         output = torch.zeros(num_local_dst_node,
@@ -121,14 +124,20 @@ class DistAggrOP(torch.autograd.Function):
         if layer > 0:
             remote_feat = torch.empty([num_max_remote, input_emb.shape[1]],
                                       device=rank)
-        print(
-            f"rank {rank} forward {layer} {input_emb.shape} {output.shape} {torch.cuda.memory_allocated(rank)}"
-        )
+        # print(
+        #     f"rank {rank} forward {layer} {input_emb.shape} {output.shape} {torch.cuda.memory_allocated(rank)}"
+        # )
         for i in range(num_device):
             graph = graphs[i]
             if i == rank:
                 if layer == 0:
+                    t0 = time.time()
                     feat = input_emb.to(rank)
+                    if profile:
+                        torch.cuda.synchronize(rank)
+                        print(
+                            f"cpu2gpu: rank {rank} layer {layer} {time.time() - t0}"
+                        )
                 else:
                     feat = input_emb
             else:
@@ -140,14 +149,33 @@ class DistAggrOP(torch.autograd.Function):
                         device=rank)
                 else:
                     feat = remote_feat[:num_remote_src_node]
+            t0 = time.time()
             dist.broadcast(feat, i)
+            if profile:
+                torch.cuda.synchronize(rank)
+                print(
+                    f"broadcast {i}: rank {rank} layer {layer} {time.time() - t0}"
+                )
 
-            cxgnncomp_backend.target_aggr(
-                feat,
-                graph.ptr.to(rank).to(torch.int64),
-                graph.idx.to(rank).to(torch.int64),
-                graph.target.to(rank).to(torch.int64), output,
-                graph.ptr.shape[0] - 1)
+            time.time()
+            if graph_type.lower() == "csr_layer":
+                cxgnncomp_backend.target_aggr(
+                    feat,
+                    graph.ptr.to(rank).to(torch.int64),
+                    graph.idx.to(rank).to(torch.int64),
+                    graph.target.to(rank).to(torch.int64), output,
+                    graph.ptr.shape[0] - 1)
+            elif graph_type.lower() == "dgl":
+                g = dgl.convert.block_to_graph(graph.block.to(rank))
+                g.ndata['ft'] = {"_N_src": feat}
+                g.ndata['output'] = {"_N_dst": output}
+                g.update_all(fn.copy_src(src='ft', out='m'),
+                             fn.sum(msg='m', out='output'))
+
+            if profile:
+                torch.cuda.synchronize(rank)
+                print(
+                    f"aggr {i}: rank {rank} layer {layer} {time.time() - t0}")
         return output
 
     @staticmethod
@@ -156,29 +184,40 @@ class DistAggrOP(torch.autograd.Function):
         num_device = ctx.num_device
         rank = ctx.rank
         layer = ctx.layer
-        print(
-            f"backward rank {rank} layer {layer} {torch.cuda.memory_allocated(rank)}"
-        )
-        if layer == 0:
-            return None, None, None, None, None, None, None
+        profile = ctx.profile
+        # print(
+        #     f"backward rank {rank} layer {layer} {torch.cuda.memory_allocated(rank)}"
+        # )
         num_local_src_node = ctx.num_local_src_node
         final_grad = None
         grad_out = torch.empty([num_local_src_node, grad_in.shape[1]],
-                                device=grad_in.device)
+                               device=grad_in.device)
         for i in range(num_device):
             grad_out.zero_()
             graph = graphs[i]
+            t0 = time.time()
             cxgnncomp_backend.target_aggr_backward(
                 grad_in,
                 graph.ptr.to(rank).to(torch.int64),
                 graph.idx.to(rank).to(torch.int64),
                 graph.target.to(rank).to(torch.int64), grad_out,
                 graph.ptr.shape[0] - 1)
+            if profile:
+                torch.cuda.synchronize(rank)
+                print(
+                    f"backward aggr {i}: rank {rank} layer {layer} {time.time() - t0}"
+                )
+            t0 = time.time()
             dist.reduce(grad_out, i)
+            if profile:
+                torch.cuda.synchronize(rank)
+                print(
+                    f"reduce {i}: rank {rank} layer {layer} {time.time() - t0}"
+                )
             if i == rank:
                 final_grad = grad_out.detach().clone()
 
-        return final_grad, None, None, None, None, None, None
+        return final_grad, None, None, None, None, None, None, None, None
 
 
 class DistAggrOPDensify(torch.autograd.Function):
@@ -346,18 +385,19 @@ class Model(cxgc.GNN):
                     output = DistAggrOPDensify.apply(
                         input_emb, graphs[l], num_node_in_layer[-1 - l],
                         num_node_in_layer[-1 - l - 1], self.num_device, rank,
-                        idx_needed_layered[l])
+                        idx_needed_layered[l], config["graph_type"])
                 else:
                     output = DistAggrOP.apply(input_emb, graphs[l],
                                               num_node_in_layer[-1 - l],
                                               num_node_in_layer[-1 - l - 1],
-                                              self.num_device, rank, l)
+                                              self.num_device, rank, l, True,
+                                              config["graph_type"])
             input_emb = self.linears[l](output)
         return input_emb
 
     def forward(self, graphs, rank, local_feat, num_node_in_layer,
                 idx_needed_layered, config):
-        if self.graph_type.lower() == "csr_layer":
+        if self.graph_type.lower() in ["csr_layer", "dgl"]:
             return self.forward_cxg(graphs, rank, local_feat,
                                     num_node_in_layer, idx_needed_layered,
                                     config)
@@ -510,19 +550,23 @@ def run(rank, world_size, args):
             if rank == 0:
                 print("num_node_in_layer", num_node_in_layer)
 
+    cpu_graph_data = True
     for l in range(args.num_layer):
         if args.skip_input and l == 0:
             continue
         for it, item in enumerate(graphs_in_layer[l]):
             item.to(rank)
-            item.ptr = item.ptr.to(torch.int32)
-            item.idx = item.idx.to(torch.int32)
-            item.target = item.target.to(torch.int32)
             if it != rank:  # densify for remote graph partition
                 item.idx, item.num_unique = process_idx(item.idx)
-            # print(
-            #     f"rank {rank} layer {l} part {it} {torch.unique(item.idx).shape[0]} {num_node_in_layer[-1 - l] / args.num_device}"
-            # )
+            item.totype(torch.int32)
+            if args.graph_type.lower() == "dgl":
+                num_src = num_node_in_layer[-1 - l] // args.num_device + (
+                    (num_node_in_layer[-1 - l] %
+                     args.num_device) if it == args.num_device - 1 else 0)
+                num_dst = num_node_in_layer[-2 - l] // args.num_device + (
+                    (num_node_in_layer[-2 - l] %
+                     args.num_device) if rank == args.num_device - 1 else 0)
+                item.todgl(num_src=num_src, num_dst=num_dst)
 
     idx_needed_layered = [[] for _ in range(args.num_layer)]
     if args.densify:
@@ -539,7 +583,6 @@ def run(rank, world_size, args):
                 idx_needed_layered[l].append(
                     process_idx(b.idx.to(rank), get_unique=True))
 
-    cpu_graph_data = True
     if cpu_graph_data:
         for l in range(args.num_layer):
             for it, item in enumerate(graphs_in_layer[l]):
@@ -589,6 +632,7 @@ def run(rank, world_size, args):
     config = {
         "skip_input": args.skip_input,
         "densify": args.densify,
+        "graph_type": args.graph_type.lower()
     }
     # train
     for i in range(args.num_epoch):
