@@ -46,6 +46,8 @@ class Batch():
         if os.path.exists(dir + "/ptr.dat"):
             self.ptr = torch.from_numpy(
                 np.fromfile(dir + "/ptr.dat", dtype=np.int64))
+        else:
+            print(dir + "/ptr.dat", "not found")
         if os.path.exists(dir + "/idx.dat"):
             self.idx = torch.from_numpy(
                 np.fromfile(dir + "/idx.dat", dtype=np.int64))

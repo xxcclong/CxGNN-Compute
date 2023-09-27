@@ -9,6 +9,7 @@ import os
 import logging
 
 logger = logging.getLogger(__name__)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
 
 
 def setup(rank, world_size):
@@ -39,7 +40,7 @@ class P3DistAggrOP(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input_emb, weight, graphs, num_src_node, num_dst_node,
-                num_device, rank):
+                num_device, rank, layer):
         ctx.graphs = graphs
         ctx.num_device = num_device
         ctx.rank = rank
@@ -104,32 +105,49 @@ class DistAggrOP(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input_emb, graphs, num_src_node, num_dst_node, num_device,
-                rank):
+                rank, layer):
         ctx.graphs = graphs
         ctx.num_device = num_device
         ctx.rank = rank
         ctx.num_local_src_node = input_emb.shape[0]
+        ctx.layer = layer
         num_local_dst_node = num_dst_node // num_device if rank != num_device - 1 else num_dst_node // num_device + (
             num_dst_node % num_device)
         output = torch.zeros(num_local_dst_node,
                              input_emb.shape[1],
-                             device=input_emb.device)
+                             device=rank)
+        num_max_remote = num_src_node // num_device + (num_src_node %
+                                                       num_device)
+        if layer > 0:
+            remote_feat = torch.empty([num_max_remote, input_emb.shape[1]],
+                                      device=rank)
+        print(
+            f"rank {rank} forward {layer} {input_emb.shape} {output.shape} {torch.cuda.memory_allocated(rank)}"
+        )
         for i in range(num_device):
             graph = graphs[i]
             if i == rank:
-                feat = input_emb
+                if layer == 0:
+                    feat = input_emb.to(rank)
+                else:
+                    feat = input_emb
             else:
                 num_remote_src_node = num_src_node // num_device if i != num_device - 1 else num_src_node // num_device + (
                     num_src_node % num_device)
-                feat = torch.empty(
-                    size=[num_remote_src_node, input_emb.shape[1]],
-                    device=input_emb.device)
+                if layer == 0:
+                    feat = torch.empty(
+                        size=[num_remote_src_node, input_emb.shape[1]],
+                        device=rank)
+                else:
+                    feat = remote_feat[:num_remote_src_node]
             dist.broadcast(feat, i)
 
-            cxgnncomp_backend.target_aggr(feat, graph.ptr.to(torch.int64),
-                                          graph.idx.to(torch.int64),
-                                          graph.target.to(torch.int64), output,
-                                          graph.ptr.shape[0] - 1)
+            cxgnncomp_backend.target_aggr(
+                feat,
+                graph.ptr.to(rank).to(torch.int64),
+                graph.idx.to(rank).to(torch.int64),
+                graph.target.to(rank).to(torch.int64), output,
+                graph.ptr.shape[0] - 1)
         return output
 
     @staticmethod
@@ -137,20 +155,30 @@ class DistAggrOP(torch.autograd.Function):
         graphs = ctx.graphs
         num_device = ctx.num_device
         rank = ctx.rank
+        layer = ctx.layer
+        print(
+            f"backward rank {rank} layer {layer} {torch.cuda.memory_allocated(rank)}"
+        )
+        if layer == 0:
+            return None, None, None, None, None, None, None
         num_local_src_node = ctx.num_local_src_node
         final_grad = None
+        grad_out = torch.empty([num_local_src_node, grad_in.shape[1]],
+                                device=grad_in.device)
         for i in range(num_device):
-            grad_out = torch.zeros([num_local_src_node, grad_in.shape[1]],
-                                   device=grad_in.device)
+            grad_out.zero_()
             graph = graphs[i]
             cxgnncomp_backend.target_aggr_backward(
-                grad_in, graph.ptr.to(torch.int64), graph.idx.to(torch.int64),
-                graph.target.to(torch.int64), grad_out, graph.ptr.shape[0] - 1)
+                grad_in,
+                graph.ptr.to(rank).to(torch.int64),
+                graph.idx.to(rank).to(torch.int64),
+                graph.target.to(rank).to(torch.int64), grad_out,
+                graph.ptr.shape[0] - 1)
             dist.reduce(grad_out, i)
             if i == rank:
-                final_grad = grad_out
+                final_grad = grad_out.detach().clone()
 
-        return final_grad, None, None, None, None, None
+        return final_grad, None, None, None, None, None, None
 
 
 class DistAggrOPDensify(torch.autograd.Function):
@@ -306,11 +334,10 @@ class Model(cxgc.GNN):
         # init layer
         input_emb = local_feat
         for l in range(self.num_layer):
-            # if rank == 0:
             torch.cuda.synchronize(rank)
             # torch.cuda.empty_cache()
-            # print(f"rank {rank} layer {l} {input_emb.shape}",
-            #   torch.cuda.memory_allocated(rank))
+            print(f"rank {rank} layer {l} {input_emb.shape}",
+                  torch.cuda.memory_allocated(rank))
             dist.barrier()
             if config["skip_input"] and l == 0:
                 output = input_emb
@@ -324,7 +351,7 @@ class Model(cxgc.GNN):
                     output = DistAggrOP.apply(input_emb, graphs[l],
                                               num_node_in_layer[-1 - l],
                                               num_node_in_layer[-1 - l - 1],
-                                              self.num_device, rank)
+                                              self.num_device, rank, l)
             input_emb = self.linears[l](output)
         return input_emb
 
@@ -493,23 +520,30 @@ def run(rank, world_size, args):
             item.target = item.target.to(torch.int32)
             if it != rank:  # densify for remote graph partition
                 item.idx, item.num_unique = process_idx(item.idx)
-            print(
-                f"rank {rank} layer {l} part {it} {torch.unique(item.idx).shape[0]} {num_node_in_layer[-1 - l] / args.num_device}"
-            )
+            # print(
+            #     f"rank {rank} layer {l} part {it} {torch.unique(item.idx).shape[0]} {num_node_in_layer[-1 - l] / args.num_device}"
+            # )
 
     idx_needed_layered = [[] for _ in range(args.num_layer)]
-    for l in range(args.num_layer):
-        if args.skip_input and l == 0:
-            continue
-        for j in range(args.num_device):
-            if j == rank:
-                idx_needed_layered[l].append(None)
+    if args.densify:
+        for l in range(args.num_layer):
+            if args.skip_input and l == 0:
                 continue
-            b = cxgc.Batch(x=None, ptr=None, idx=None, target=None)
-            b.fromfile(
-                f".cache/{args.dataset}_{args.num_device}_{j}_{l}_{rank}")
-            idx_needed_layered[l].append(
-                process_idx(b.idx.to(rank), get_unique=True))
+            for j in range(args.num_device):
+                if j == rank:
+                    idx_needed_layered[l].append(None)
+                    continue
+                b = cxgc.Batch(x=None, ptr=None, idx=None, target=None)
+                b.fromfile(
+                    f".cache/{args.dataset}_{args.num_device}_{j}_{l}_{rank}")
+                idx_needed_layered[l].append(
+                    process_idx(b.idx.to(rank), get_unique=True))
+
+    cpu_graph_data = True
+    if cpu_graph_data:
+        for l in range(args.num_layer):
+            for it, item in enumerate(graphs_in_layer[l]):
+                item.to("cpu")
 
     # if rank == 0:
     print(rank, "prepare graph dataset", torch.cuda.memory_allocated(rank))
@@ -525,23 +559,29 @@ def run(rank, world_size, args):
     if args.baseline.lower() == "p3":
         if rank != world_size - 1:
             local_feat = torch.randn(
-                [num_total_node, args.infeat // world_size], device=rank)
+                [num_total_node, args.infeat // world_size],
+                device=rank,
+                requires_grad=False)
         else:
             local_feat = torch.randn([
                 num_total_node, args.infeat // world_size +
                 (args.infeat % world_size)
             ],
-                                     device=rank)
+                                     device=rank,
+                                     requires_grad=False)
     else:
         if rank != world_size - 1:
             local_feat = torch.randn(
-                [num_total_node // world_size, args.infeat], device=rank)
+                [num_total_node // world_size, args.infeat],
+                device="cpu",
+                requires_grad=False)
         else:
             local_feat = torch.randn([
                 num_total_node // world_size +
                 (num_total_node % world_size), args.infeat
             ],
-                                     device=rank)
+                                     device="cpu",
+                                     requires_grad=False)
 
     # if rank == 0:
     print(rank, "prepare local feat", torch.cuda.memory_allocated(rank))

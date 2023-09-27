@@ -300,7 +300,7 @@ def get_model(config):
     in_channel = config.dl.dataset.feature_dim
     out_channel = config.dl.dataset.num_classes
     hidden_channel = config.train.model.hidden_dim
-    num_layer = config.train.model.num_layer
+    num_layer = config.dl.sampler.train.num_layer
     dropout = config.train.model.dropout
     graph_type = graph_type_dict[config.train.type.lower()]
     if "gat" in config.train.model.type.lower():

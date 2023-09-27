@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
             config_path="../../CxGNN-DL/configs",
             config_name="config")
 def main(config: DictConfig):
+    cxgnncomp.set_timers()
     s = OmegaConf.to_yaml(config)
     log.info(s)
     new_file_name = "new_config.yaml"

@@ -105,8 +105,11 @@ class Trainer:
                 continue
             self.optimizer.zero_grad()
             out = self.model(batch)
+            torch.cuda.synchronize()
             loss = self.loss_fn(out, batch.y)
+            torch.cuda.synchronize()
             loss.backward()
+            torch.cuda.synchronize()
             self.optimizer.step()
             self.scheduler.step()
         torch.cuda.synchronize()
