@@ -15,14 +15,14 @@ def train(model, params, label, optimizer, lossfn):
     loss = lossfn(out, label)
     torch.cuda.synchronize()
     t1 = time.time()
-    if not isinstance(model, cxgc.RGCN):
-        loss.backward()
-        optimizer.step()
+    loss.backward()
+    optimizer.step()
     torch.cuda.synchronize()
     t2 = time.time()
     timer = cxgc.get_timers()
     print(f"forward {t1 - t0} backward {t2 - t1}")
     # timer.log_all(print)
+
 
 
 def test_conv_training(args):
@@ -75,20 +75,19 @@ def test_conv_training(args):
     #                         [ptr, idx, feat, ptr.shape[0] - 1])
 
 
-
 def get_dset_config(dset):
     if "arxiv" in dset:
         infeat = 128
-        outfeat = 40
+        outfeat = 64
     elif dset == "products":
         infeat = 100
-        outfeat = 47
+        outfeat = 64
     elif dset == "reddit":
         infeat = 602
         outfeat = 41
     elif "paper" in dset:
         infeat = 128
-        outfeat = 172
+        outfeat = 256
     elif "friendster" in dset:
         infeat = 384
         outfeat = 64
@@ -105,13 +104,21 @@ def get_model(args):
     infeat, outfeat = get_dset_config(args.dataset)
     dev = "cuda"
     num_head = args.num_head
-    model = get_model_from_str(mtype, infeat, hiddenfeat, outfeat, graph_type, 
-                               num_layer, num_head, args.num_rel,
-                               args.dataset).to(dev)
+    model = get_model_from_str(mtype,
+                               infeat,
+                               hiddenfeat,
+                               outfeat,
+                               graph_type,
+                               num_layer,
+                               num_head,
+                               args.num_rel,
+                               args.dataset,
+                               dropout=0).to(dev)
     return model
 
 
 def to_dgl_block(ptr, idx, num_node_in_layer, num_edge_in_layer):
+    print("num_node_in_layer", num_node_in_layer)
     blocks = []
     num_layer = num_node_in_layer.shape[0] - 1
     for i in range(len(num_node_in_layer) - 1):
@@ -164,8 +171,11 @@ def run_model(args, model):
         assert False, "unknown graph type"
     print(f"ans {args.dataset} {args.model} {args.graph_type} {output[0]}")
 
+    cxgc.global_tuner.save()
+
 
 def test_model_training(args):
+    cxgc.global_tuner.set_lazy(lazy=False)
     cxgc.set_timers()
     model = get_model(args)
     run_model(args, model)

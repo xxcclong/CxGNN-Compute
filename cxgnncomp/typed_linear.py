@@ -72,7 +72,7 @@ class TypedLinearE2EOP(torch.autograd.Function):
     # x: [E, dim]
 
     @staticmethod
-    def preprocess(weights, types, thres):
+    def preprocess(weights, types, thres=256):
         num_rel = weights.shape[0]
         num_item = types.shape[0]
         count = torch.bincount(types)
@@ -96,10 +96,15 @@ class TypedLinearE2EOP(torch.autograd.Function):
                 count=None):
         if len(preprocessed) == 4:
             # return typed_matmul(x, weights, types, x.shape[0])
+            print("reuse preprocessed")
             sorted_types, num_item, indices, count = preprocessed
         else:
+            t0 = time.time()
             sorted_types, num_item, indices, count = TypedLinearE2EOP.preprocess(
                 weights, types, thres)
+            torch.cuda.synchronize()
+            t1 = time.time()
+            print("preprocessing", t1 - t0)
         # print(torch.max(indices), x.shape, sorted_types.shape, indices.shape)
         output = typed_matmul(x, weights, sorted_types, num_item, indices)
         ctx.save_for_backward(x, weights, types, indices, sorted_types, count)
@@ -110,11 +115,15 @@ class TypedLinearE2EOP(torch.autograd.Function):
     def backward(ctx, grad_out):
         # a naive implementation
         x, weights, types, indices, sorted_types, count = ctx.saved_tensors
+        # print(x.requires_grad, weights.requires_grad, types.requires_grad)
         num_rel = weights.shape[0]
         num_item = types.shape[0]
-        trans_weights = torch.transpose(weights, 1, 2).contiguous()
-        grad_x = typed_matmul(grad_out, trans_weights, sorted_types, num_item,
-                              indices)
+        if x.requires_grad:
+            trans_weights = torch.transpose(weights, 1, 2).contiguous()
+            grad_x = typed_matmul(grad_out, trans_weights, sorted_types,
+                                  num_item, indices)
+        else:
+            grad_x = None
         grad_weights = torch.empty_like(weights)
         torch.cuda.synchronize()
         t0 = time.time()
@@ -125,7 +134,7 @@ class TypedLinearE2EOP(torch.autograd.Function):
         torch.cuda.synchronize()
         t1 = time.time()
         print("bwd mm", t1 - t0)
-        return grad_x, grad_weights, None
+        return grad_x, grad_weights, None, None
 
 
 class TypedLinearS2EOP(torch.autograd.Function):

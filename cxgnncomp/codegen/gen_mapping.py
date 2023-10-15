@@ -3,6 +3,8 @@ import cxgnncomp
 import cxgnncomp_backend
 import time
 import random
+import pickle
+import os, sys
 
 
 def validate(cpw, rpb, cpb, block_size, feat_len):
@@ -21,7 +23,7 @@ def validate(cpw, rpb, cpb, block_size, feat_len):
 class Tuner():
 
     def __init__(self, lazy=False):
-        self.cache = {}
+        # self.cache = {}
         self.cpws = [32, 64, 128, 256, 512, 1024]
         self.rpbs = [1, 2, 4, 8, 16, 32]
         self.cpbs = [32, 64, 128, 256, 512, 1024]
@@ -31,6 +33,20 @@ class Tuner():
         self.grid_maps = [0, 1]
         self.lazy = lazy
         print(f"Tuner lazy {lazy}")
+        # load cache table
+        if os.path.exists("/home/huangkz/cache.pkl"):
+            print("Loading cache table")
+            self.cache = pickle.load(open("/home/huangkz/cache.pkl", "rb"))
+        else:
+            print("No cache table")
+            self.cache = {}
+
+    def save(self):
+        print("Saving cache table")
+        pickle.dump(self.cache, open("/home/huangkz/cache.pkl", "wb"))
+
+    def set_lazy(self, lazy):
+        self.lazy = lazy
 
     def hash(
         self,
@@ -149,7 +165,7 @@ class Tuner():
             cnt += 1
         print("Tuning finish with patience", patience, "tune time",
               time.time() - t0, f"trial-num {cnt}", "best", mmin, "worst",
-              mmax, mmin / num_edge, best_config)
+              mmax, mmin / num_edge, best_config, hash_str)
         assert best_config is not None
         self.cache[hash_str] = best_config
         output = func(*run_param, *best_config)

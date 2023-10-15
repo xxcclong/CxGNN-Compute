@@ -50,6 +50,8 @@ void init_rel_spmm(py::module &m) {
   m.def("typed_linear_s2d", &run_typed_linear_s2d, "");
   m.def("pad_rel", &pad_rel_gpu, "");
   m.def("pad_rel_idx", &pad_rel_idx_gpu, "");
+  m.def("seastar_forward", &call_seastar_rgcn_forward, "");
+  m.def("seastar_backward", &call_seastar_rgcn_backward, "");
 }
 
 void init_spmm_multihead(py::module &m) {

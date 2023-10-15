@@ -359,14 +359,15 @@ def get_model_from_str(mtype,
                        num_layer,
                        num_head=-1,
                        num_rel=-1,
-                       dataset=None):
+                       dataset=None,
+                       dropout=0.5):
     mtype = mtype.upper()
     if mtype == "GCN":
         model = GCN(infeat,
                     hiddenfeat,
                     outfeat,
                     num_layer,
-                    dropout=0.5,
+                    dropout=dropout,
                     graph_type=graph_type,
                     config=None)
     elif mtype == "GAT":
@@ -374,7 +375,7 @@ def get_model_from_str(mtype,
                     hiddenfeat,
                     outfeat,
                     num_layer,
-                    dropout=0.5,
+                    dropout=dropout,
                     graph_type=graph_type,
                     config=None,
                     heads=num_head)
@@ -383,7 +384,7 @@ def get_model_from_str(mtype,
                      hiddenfeat,
                      outfeat,
                      num_layer,
-                     dropout=0.5,
+                     dropout=dropout,
                      graph_type=graph_type,
                      config=None)
     elif mtype == "RGCN":
@@ -391,7 +392,7 @@ def get_model_from_str(mtype,
                      hiddenfeat,
                      outfeat,
                      num_layer,
-                     dropout=0.5,
+                     dropout=dropout,
                      graph_type=graph_type,
                      config=None,
                      num_rel=num_rel,

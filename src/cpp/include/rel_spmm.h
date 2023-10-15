@@ -41,3 +41,12 @@ void run_typed_linear_s2e(Tensor vin, Tensor weights, Tensor output,
 void run_typed_linear_s2d(Tensor vin, Tensor weights, Tensor output,
                           Tensor src_id, Tensor dst_id, Tensor types,
                           int in_feat_tile);
+
+torch::Tensor call_seastar_rgcn_forward(torch::Tensor input, torch::Tensor ptr,
+                                        torch::Tensor idx,
+                                        torch::Tensor weights,
+                                        torch::Tensor etype);
+
+std::vector<torch::Tensor> call_seastar_rgcn_backward(
+    torch::Tensor input, torch::Tensor ptr, torch::Tensor idx,
+    torch::Tensor weights, torch::Tensor etype, torch::Tensor grad);

@@ -25,8 +25,9 @@ class AggrOP(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, x, ptr, idx, num_center):
+        # torch.cuda.synchronize()
         ctx.save_for_backward(x, ptr, idx, num_center)
-        torch.cuda.synchronize()
+        # torch.cuda.synchronize()
         output_dst = global_tuner.tune_graph(
             num_center,
             idx.shape[0],
@@ -39,17 +40,26 @@ class AggrOP(torch.autograd.Function):
                 num_center,
             ],
         )
-        torch.cuda.synchronize()
+        # torch.cuda.synchronize()
         return output_dst
 
     @staticmethod
     def backward(ctx, grad_out):
         x, ptr, idx, num_center = ctx.saved_tensors
-        torch.cuda.synchronize()
+        # torch.cuda.synchronize()
+
+        # # TODO: now assuming asymmetric graph
+        # assert num_center == x.shape[0] and x.shape == grad_out.shape
+        # grad_vin = global_tuner.tune_graph(
+        #     num_center, idx.shape[0], grad_out.shape[-1],
+        #     cxgnncomp_backend.run_spmm_configurable,
+        #     [ptr, idx, grad_out, num_center])
+
         grad_vin = global_tuner.tune_graph(
             num_center, idx.shape[0], grad_out.shape[-1],
             cxgnncomp_backend.run_spmm_configurable_bwd,
             [ptr, idx, x, grad_out, num_center])
+        # torch.cuda.synchronize()
         return grad_vin, None, None, None
 
 
@@ -83,8 +93,10 @@ class MySageConv(torch.nn.Module):
         if self.in_channels > self.hidden_channels:
             out = self.lin_l(x)
             out = AggrOP.apply(out, ptr, idx, num_node)
+            # out = sage_mean_forward(out, ptr, idx, num_node)
         else:
             out = AggrOP.apply(x, ptr, idx, num_node)
+            # out = sage_mean_forward(x, ptr, idx, num_node)
             out = self.lin_l(out)
 
         if self.root_weight:
@@ -115,6 +127,26 @@ class MyGINConv(torch.nn.Module):
         out += (1 + self.eps) * x[:num_node]
         out = self.nn(out)
         return out
+
+
+class SeastarRGCNOP(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, x, weights, ptr, idx, rel, num_center):
+        # weights = torch.transpose(weights, 1, 2)
+        rel = rel.to(torch.int64)
+        ctx.save_for_backward(x, weights, ptr, idx, rel)
+        out = cxgnncomp_backend.seastar_forward(x, ptr, idx, weights, rel)
+        # torch.cuda.synchronize()
+        # print("out", out, x, weights)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        x, weights, ptr, idx, rel = ctx.saved_tensors
+        grad_x, grad_weight = cxgnncomp_backend.seastar_backward(
+            x, ptr, idx, weights, rel, grad_out)
+        return grad_x, grad_weight, None, None, None, None
 
 
 class RGCNOP(torch.autograd.Function):
@@ -226,7 +258,8 @@ class RGCNOP3(torch.autograd.Function):
             weights), None, None, None, None
 
 
-def run_rgcn4(x, ptr, idx, edge_types, linear, num_center, num_edge):
+def run_rgcn4(x, ptr, idx, edge_types, linear, num_center, num_edge,
+              preproccessed):
     # print(x.shape, ptr.shape, idx.shape, edge_types.shape, linear.shape,
     #       x.dtype, ptr.dtype, idx.dtype, edge_types.dtype, linear.dtype,
     #       x.device, ptr.device, idx.device, edge_types.device, linear.device)
@@ -237,7 +270,7 @@ def run_rgcn4(x, ptr, idx, edge_types, linear, num_center, num_edge):
     torch.cuda.synchronize()
     t1 = time.time()
     print("index time", t1 - t0)
-    out = TypedLinearE2EOP.apply(x_idxed, linear, edge_types)
+    out = TypedLinearE2EOP.apply(x_idxed, linear, edge_types, preproccessed)
     torch.cuda.synchronize()
     t2 = time.time()
     print("typed mm", t2 - t1)
@@ -260,6 +293,7 @@ class MyRGCNConv(torch.nn.Module):
         self.register_parameter("rel_weight", self.linear)
         self.single_linear = torch.nn.Linear(in_channels, hidden_channels)
         self.reset_parameters()
+        self.preprocessed = []
 
     def reset_parameters(self):
         glorot(self.linear)
@@ -268,15 +302,26 @@ class MyRGCNConv(torch.nn.Module):
         pass
 
     def forward(self, x, ptr, idx, edge_types, num_node):
+
         # out = RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
+
+        if len(self.preprocessed) == 0:
+            self.preprocessed = TypedLinearE2EOP.preprocess(
+                self.linear, edge_types)
         out = run_rgcn4(x,
                         ptr,
                         idx,
                         edge_types,
                         self.linear,
                         num_node,
-                        num_edge=edge_types.shape[0])
+                        num_edge=edge_types.shape[0],
+                        preproccessed=self.preprocessed)
+
         deg = ptr[1:] - ptr[:-1]
+        # out = SeastarRGCNOP.apply(x, self.linear, ptr, idx, edge_types,
+        #                           num_node)
+        # torch.cuda.synchronize()
+
         out = out / deg.unsqueeze(-1)[:out.shape[0]]
         # out = self.single_linear(x)
         # out = sage_mean_forward(out, ptr, idx, num_node)
@@ -484,8 +529,7 @@ class MyGCNConv(torch.nn.Module):
     def forward(self, x, ptr, idx, num_node):
         x = TimerOP.apply(x, "linear", True)
         if self.in_channels > self.out_channels:
-            out = self.lin(
-                x)  # order of lin and aggregation is consistent to PyG
+            out = self.lin(x)
         else:
             out = x
         out = TimerOP.apply(out, "linear", False)
@@ -499,12 +543,12 @@ class MyGCNConv(torch.nn.Module):
                                               num_node)
             out = TimerOP.apply(out, "aggregation", False)
         else:
-            # out = sage_sum_forward(x, ptr, idx, num_node)
+            # out = sage_sum_forward(out, ptr, idx, num_node)
             out = AggrOP.apply(out, ptr, idx, num_node)
 
         if self.in_channels <= self.out_channels:
             out = self.lin(out)
-
+        # print("model out", out.reshape(-1)[:10])
         if self.bias is not None:
             return out + self.bias
         else:
