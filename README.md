@@ -23,7 +23,7 @@ Install requirements. Make sure [CxGNN-DL](https://github.com/xxcclong/CxGNN-DL)
 
 ```bash
 cd CxGNN-Compute
-bash install.sh
+bash install.sh # this will install the prerequisites (e.g., CxGNN-DL) and CxGNN-Compute
 ```
 
 ### Data preparation

@@ -34,16 +34,16 @@ class Tuner():
         self.lazy = lazy
         print(f"Tuner lazy {lazy}")
         # load cache table
-        if os.path.exists("/home/huangkz/cache.pkl"):
+        if os.path.exists("../../../../cache.pkl"):
             print("Loading cache table")
-            self.cache = pickle.load(open("/home/huangkz/cache.pkl", "rb"))
+            self.cache = pickle.load(open("../../../../cache.pkl", "rb"))
         else:
             print("No cache table")
             self.cache = {}
 
     def save(self):
         print("Saving cache table")
-        pickle.dump(self.cache, open("/home/huangkz/cache.pkl", "wb"))
+        pickle.dump(self.cache, open("../../../../cache.pkl", "wb"))
 
     def set_lazy(self, lazy):
         self.lazy = lazy
