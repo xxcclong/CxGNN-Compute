@@ -3,8 +3,23 @@ import numpy
 import time
 
 
+def neighbor_grouping_gpu(ptr, neighbor_thres=32):
+    deg = ptr[1:] - ptr[:-1]
+    up_deg = (deg + neighbor_thres - 1) // neighbor_thres
+    total_num = torch.sum(up_deg)
+    new_ptr = torch.ones(total_num + 1, dtype=torch.int64,
+                         device=ptr.device) * neighbor_thres
+    new_ptr[0] = 0
+    incorrect_pos = torch.cumsum(up_deg, dim=0)
+    new_ptr[incorrect_pos] = deg - neighbor_thres * (up_deg - 1)
+    new_ptr = torch.cumsum(new_ptr, dim=0)
+    # new_target = torch.arange(num_node, dtype=torch.int64, device=ptr.device).repeat_interleave(up_deg)
+    return new_ptr
+
+
 def neighbor_grouping(ptr, neighbor_thres=32):
-    ptr = ptr.cpu().numpy()
+    if not isinstance(ptr, numpy.ndarray):
+        ptr = ptr.cpu().numpy()
     new_ptr = [0]
     new_target = []
     for i in range(len(ptr) - 1):

@@ -783,7 +783,7 @@ def typed_matmul(a,
     # torch.cuda.synchronize()
     # t0 = time.time()
     if src_idx is None:
-        print("no index")
+        # print("no index")
         typed_matmul_kernel_no_index[grid](
             a,
             b,
@@ -800,7 +800,7 @@ def typed_matmul(a,
             c.stride(1),
         )
     elif src_idx is not None and dst_idx is None and not seq_output:
-        print("single index")
+        # print("single index")
         typed_matmul_kernel_single_index[grid](
             a,
             b,
@@ -819,7 +819,7 @@ def typed_matmul(a,
         )
         pass
     elif src_idx is not None and dst_idx is None and seq_output:
-        print("single index seq output")
+        # print("single index seq output")
         typed_matmul_kernel_single_index_seq_output[grid](
             a,
             b,
@@ -837,7 +837,7 @@ def typed_matmul(a,
             c.stride(1),
         )
     else:
-        print("typed matmul kernel")
+        # print("typed matmul kernel")
         typed_matmul_kernel[grid](
             a,
             b,

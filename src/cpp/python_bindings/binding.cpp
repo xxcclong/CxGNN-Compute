@@ -24,6 +24,7 @@ void init_compute(py::module &m) {
   m.def("edge_value_degree", &edge_value_degree, "ptr"_a, "num_dst"_a,
         "num_edge"_a, "Edge value degree");
   m.def("target_aggr", &target_sage_sum_forward, "target aggr");
+  m.def("target_aggr_backward", &target_sage_sum_backward, "target aggr");
   m.def("rel_schedule", &rel_schedule, "rel schedule");
   m.def("selective_aggr", &selective_aggr_fwd, "selective aggr");
   m.def("selective_aggr_bwd", &selective_aggr_bwd, "selective aggr");
@@ -49,6 +50,8 @@ void init_rel_spmm(py::module &m) {
   m.def("typed_linear_s2d", &run_typed_linear_s2d, "");
   m.def("pad_rel", &pad_rel_gpu, "");
   m.def("pad_rel_idx", &pad_rel_idx_gpu, "");
+  m.def("seastar_forward", &call_seastar_rgcn_forward, "");
+  m.def("seastar_backward", &call_seastar_rgcn_backward, "");
 }
 
 void init_spmm_multihead(py::module &m) {

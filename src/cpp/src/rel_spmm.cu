@@ -465,3 +465,115 @@ torch::Tensor aggr_rgcn_direct_func(torch::Tensor input, torch::Tensor ptr,
       weights.data<float>(), rel.data<int>());
   return output;
 }
+
+__global__ void RgcnLayer1KernelImpl(const Index* ranges, 
+  const Index* src_ids, 
+  const Index* types, 
+  const float* hidden, 
+  const float* weight, 
+  float* ret, 
+  Index num_nodes, 
+  Index feat_len_y, 
+  Index feat_len_x, 
+  Index ntypes) {
+    Index tx = threadIdx.x + (blockIdx.x % feat_len_x) * feat_len_y;
+    if (blockIdx.x < num_nodes) {
+        Index beg = __ldg(ranges + blockIdx.x);
+        Index end = __ldg(ranges + blockIdx.x + 1);
+        Index tx = threadIdx.x;
+        for (;tx<feat_len_x * feat_len_y; tx += blockDim.x) {
+          Index ty = tx / feat_len_x;
+          Index th = tx % feat_len_x;
+          float agg_val = 0.; 
+          float w = 0.;
+          Index cur_type_id = -1;
+          for(;beg<end;beg++) {
+              Index src_id = __ldg(src_ids + beg);
+              // Index eid = __ldg(eids + beg);
+              Index type_id = __ldg(types + beg);
+              if (type_id != cur_type_id) {
+                  w = __ldg(weight + type_id*feat_len_y*feat_len_x + tx);
+              }
+              float h = __ldg(hidden + src_id*feat_len_y + ty);
+              // float n = __ldg(norm + eid);
+              agg_val += h * w;
+          }
+          atomicAdd(ret + blockIdx.x*feat_len_x + th, agg_val);
+      }
+    }
+}
+
+torch::Tensor call_seastar_rgcn_forward(torch::Tensor input, torch::Tensor ptr,
+                              torch::Tensor idx, torch::Tensor weights,
+                              torch::Tensor etype) {
+  Index ntypes = weights.sizes()[0];
+  Index feat_len_y = weights.sizes()[1];
+  Index feat_len_x = weights.sizes()[2];
+  int nblks = ptr.sizes()[0] - 1;
+  int nthrs = feat_len_y;
+  auto output = input.new_zeros({ptr.sizes()[0] - 1, feat_len_x});
+  RgcnLayer1KernelImpl<<<nblks, nthrs >>>
+      (ptr.data<Index>(), idx.data<Index>(), etype.data<Index>(), input.data<float>(),
+      weights.data<float>(), output.data<float>(), ptr.sizes()[0] - 1, feat_len_y, feat_len_x, ntypes);
+  checkCudaErrors(cudaDeviceSynchronize());
+  return output;
+}
+
+
+__global__ void RgcnLayer1BackwardKernelImpl(Index* ranges, 
+  Index* dst_ids, 
+  Index* types, 
+  float* hidden, 
+  float* weight, 
+  float* grad_out, 
+  float* grad_hidden, 
+  float* grad_weight, 
+  Index num_nodes, 
+  Index feat_len_y, 
+  Index feat_len_x, 
+  Index ntypes) {
+    if (blockIdx.x < num_nodes) {
+        Index beg = __ldg(ranges + blockIdx.x);
+        Index end = __ldg(ranges + blockIdx.x + 1);
+        Index tx = threadIdx.x;
+        for (;tx<feat_len_x * feat_len_y; tx += blockDim.x) {
+            Index ty = tx / feat_len_x;
+            Index th = tx % feat_len_x;
+            float h = __ldg(hidden + blockIdx.x*feat_len_y + ty);
+            float agg = 0.;
+            for(;beg<end;beg++) {
+                Index dst_id = __ldg(dst_ids + beg);
+                // Index eid = __ldg(eids + beg);
+                Index type_id = __ldg(types + beg);
+                float g = __ldg(grad_out + dst_id * feat_len_x + th);
+                float w = __ldg(weight + type_id*feat_len_y*feat_len_x + tx);
+                // float n = __ldg(norm + eid);
+                agg += g*w;
+                atomicAdd(grad_weight + type_id*feat_len_y*feat_len_x + tx, g*h);
+            }
+            atomicAdd(grad_hidden + blockIdx.x*feat_len_y + ty, agg);
+        }
+    }
+}
+
+std::vector<torch::Tensor> call_seastar_rgcn_backward(torch::Tensor input, torch::Tensor ptr,
+                              torch::Tensor idx, torch::Tensor weights,
+                              torch::Tensor etype, torch::Tensor grad) {
+  auto grad_input = torch::zeros_like(input);
+  auto grad_weight = torch::zeros_like(weights);
+  Index ntypes = weights.sizes()[0];
+  Index feat_len_y = weights.sizes()[1];
+  Index feat_len_x = weights.sizes()[2];
+
+  int nblks = ptr.sizes()[0] - 1;
+  int nthrs = feat_len_y;
+
+  RgcnLayer1BackwardKernelImpl<<<nblks, nthrs>>> (
+    ptr.data<Index>(), idx.data<Index>(), etype.data<Index>(), input.data<float>(),
+    weights.data<float>(),
+    grad.data<float>(),
+    grad_input.data<float>(),
+    grad_weight.data<float>(),
+    ptr.sizes()[0] - 1, feat_len_y, feat_len_x, ntypes);
+    return {grad_input, grad_weight};
+}

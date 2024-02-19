@@ -1,16 +1,43 @@
-## Install
+# CxGNN-Compute
+
+## Setup
+
+If you use our cluster, just activate the prepared environment.
+
+```bash
+source /data/eurosysae/.venv/cxgnn/bin/activate
+```
+
+Else, you need to setup the environment and prepare the data:
+
+### Environment
+
+Activate virtual environment:
+```bash
+mkdir ~/.venv
+python3 -m venv ~/.venv/cxgnn
+source ~/.venv/cxgnn/bin/activate
+```
+
+Install requirements. Make sure [CxGNN-DL](https://github.com/xxcclong/CxGNN-DL) is cloned and put aside with CxGNN-Compute.
+
+```bash
+cd CxGNN-Compute
+bash install.sh
 
 ```
-# install cxgnndl before it
-source /opt/spack/share/spack/setup-env.sh
-spack load /5juudln # cuda11.3
-spack load /7zlelqx # cudnn8.2.4
-python setup.py build -j16 develop --user
+
+### Data preparation
+
+All datasets are from [OGB](https://ogb.stanford.edu/). We have pre-processed them for faster read. You can get access to them:
+
+```bash
+bash download.sh
+mv data /PATH/TO/CxGNN-DL/
 ```
 
-## Run
+## Reproduce
 
-```
-python example/train.py dl/dataset=arxiv dl.type=cxg train.type=dgl # using cxg as the loader, using dgl to define the model
-python example/train.py dl/dataset=arxiv dl.type=cxg train.type=cxg train.model=gcn # using cxg as the loader, using cxg to define the model
-```
+Scripts and READMEs for experiments are put in `test/ae/`
+
+## TroubleShooting

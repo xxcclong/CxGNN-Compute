@@ -5,12 +5,13 @@ from cxgnncomp import (
     MyGATConv,
     MyRGCNConv,
     MyGCNConv,
+    LSTMConv,
     get_conv_from_str,
     get_model_from_str,
     Batch,
     PyGBatch,
+    reorder_by
 )
-import cxgnncomp_backend
 import dgl
 import time
 
@@ -20,6 +21,8 @@ def train(model, params, label, optimizer, lossfn):
     t0 = time.time()
     optimizer.zero_grad()
     out = model(*params)
+    if isinstance(model, LSTMConv):
+        return
     loss = lossfn(out, label)
     torch.cuda.synchronize()
     t1 = time.time()
@@ -101,9 +104,6 @@ def test_conv_training(args):
             ),
         )
     torch.cuda.synchronize()
-    # output = cxgc.tune_spmm(ptr.shape[0] - 1, idx.shape[0], feat.shape[-1],
-    #                         cxgnncomp_backend.run_spmm_configurable,
-    #                         [ptr, idx, feat, ptr.shape[0] - 1])
 
 
 def get_dset_config(dset):
@@ -133,6 +133,8 @@ def get_model(args):
     hiddenfeat = args.hidden_feat
     num_layer = args.num_layer
     infeat, outfeat = get_dset_config(args.dataset)
+    if mtype.upper() == "LSTM":
+        infeat, outfeat = args.dedicate_feat, args.dedicate_feat
     dev = "cuda"
     num_head = args.num_head
     model = get_model_from_str(
@@ -170,6 +172,8 @@ def to_dgl_block(ptr, idx, num_node_in_layer, num_edge_in_layer):
 def run_model(args, model):
     dset = args.dataset
     infeat, outfeat = get_dset_config(args.dataset)
+    if args.model.upper() == "LSTM":
+        infeat, outfeat = args.dedicate_feat, args.dedicate_feat
     num_head = args.num_head
     dev = torch.device("cuda:0")
     feat, ptr, idx, b, edge_index = cxgc.prepare_graph(
@@ -180,10 +184,15 @@ def run_model(args, model):
         is_full_graph=args.is_full_graph,
         need_edge_index=True,
     )
+    if args.graph_type == "CSR_Layer":
+        edge_index = None
+        if args.model == "LSTM":
+            deg = ptr[1:] - ptr[:-1]
+            metric = torch.argsort(deg, descending=False)
+            ptr, idx = reorder_by(ptr, idx, metric)
     feat_label = torch.randn(
         [b["num_node_in_layer"][0], outfeat], dtype=torch.float32, device=dev
     )
-
     # NG
     # new_ptr, new_target = cxgc.neighbor_grouping(ptr, neighbor_thres=32)
     # feat = torch.randn([new_ptr.shape[0] - 1, infeat],device=feat.device)
@@ -193,13 +202,13 @@ def run_model(args, model):
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
     lossfn = torch.nn.MSELoss()
-    if args.graph_type == "CSR_Layer":
+    if args.graph_type == "CSR_Layer" or args.model == "LSTM":
         output = cxgc.prof(
             args.graph_type,
             args.model,
             lambda: train(
                 model,
-                [Batch(feat, ptr, idx, b["num_node_in_layer"], b["num_edge_in_layer"])],
+                [Batch(feat, ptr, idx, b["num_node_in_layer"], b["num_edge_in_layer"], edge_index=edge_index)],
                 feat_label,
                 optimizer,
                 lossfn,
@@ -251,6 +260,7 @@ if __name__ == "__main__":
     parser.add_argument("--outfeat", type=int, default=-1)
     parser.add_argument("--is_full_graph", type=int, default=1)
     parser.add_argument("--num_seeds", type=int, default=1000)
+    parser.add_argument("--dedicate_feat", type=int, default=32)
     args = parser.parse_args()
     print(args)
     if args.infeat > 0 and args.outfeat > 0:

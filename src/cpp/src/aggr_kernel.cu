@@ -574,8 +574,34 @@ __global__ void target_aggr(Index *ptr, Index *idx, Index *targets, float *vin,
     for (int j = 0; j < jlimit; ++j) {
       int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
       if (neighbor_id != -1 && col < INFEATURE)
-        rs += vin[neighbor_id * INFEATURE + col];
+        rs += vin[((Index)neighbor_id) * INFEATURE + col];
     }
   }
   if (col < INFEATURE) atomicAdd(vout + target_id * INFEATURE + col, rs);
+}
+
+__global__ void target_aggr_backward(Index *ptr, Index *idx, Index *targets, const float *grads_in,
+                            float *grads_out, int num_node, int INFEATURE) {
+  int lane = threadIdx.x & 31;
+  int row = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+  int col = (threadIdx.y << 5) + lane;
+  if (row >= num_node) return;
+  if (col >= INFEATURE) return;
+  Index begin = ptr[row], end = ptr[row + 1], target_id = targets[row];
+  float grad = grads_in[target_id * INFEATURE + col];
+  int theidx, jlimit;
+#pragma unroll
+  for (Index i = begin; i < end; i += 32) {
+    if (i + lane < end) {
+      theidx = idx[i + lane];
+    }
+    jlimit = 32;
+    if (end - i < 32) jlimit = end - i;
+    for (int j = 0; j < jlimit; ++j) {
+      int neighbor_id = __shfl_sync(0xffffffff, theidx, j, 32);
+      if (neighbor_id != -1 && col < INFEATURE)
+        // rs += vin[neighbor_id * INFEATURE + col];
+        atomicAdd(grads_out + ((Index)neighbor_id) * INFEATURE + col, grad);
+    }
+  }
 }

@@ -66,6 +66,9 @@ void selective_aggr_bwd(Tensor grad_output, Tensor ptr, Tensor idx, Tensor mask,
 void target_sage_sum_forward(Tensor input, Tensor ptr, Tensor idx,
                              Tensor targets, Tensor output, int num_node);
 
+void target_sage_sum_backward(Tensor grad_in, Tensor ptr, Tensor idx, 
+                              Tensor targets, Tensor grad_out, int num_node);
+
 
 // Tensor sage_sum_target_forward(Tensor input, Tensor ptr,
 // Tensor idx,

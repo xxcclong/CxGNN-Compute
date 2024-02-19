@@ -220,7 +220,7 @@ __global__ void spmv_csr(Index *ptr, Index *idx, float *input, float *output,
   if (dst_id < num_dst) {
     Index begin = ptr[dst_id], end = ptr[dst_id + 1];
     float val = 0.f;
-    for (int i = begin + laneid; i < end; i += 32) {
+    for (Index i = begin + laneid; i < end; i += 32) {
       val += input[idx[i]];
     }
     // atomicAdd(output + dst_id, val);
