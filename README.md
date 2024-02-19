@@ -41,3 +41,5 @@ mv data /PATH/TO/CxGNN-DL/
 Scripts and READMEs for experiments are put in `test/ae/`
 
 ## TroubleShooting
+
+If you meet any problem, please contact us through email (hkz20@mails.tsinghua.edu.cn) or HotCRP.
