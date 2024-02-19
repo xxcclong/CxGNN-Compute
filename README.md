@@ -24,7 +24,6 @@ Install requirements. Make sure [CxGNN-DL](https://github.com/xxcclong/CxGNN-DL)
 ```bash
 cd CxGNN-Compute
 bash install.sh
-
 ```
 
 ### Data preparation
@@ -33,7 +32,15 @@ All datasets are from [OGB](https://ogb.stanford.edu/). We have pre-processed th
 
 ```bash
 bash download.sh
-mv data /PATH/TO/CxGNN-DL/
+```
+
+After it, the directory tree should be like
+
+```
+.
+|-- CxGNN-Compute
+|-- CxGNN-DL
+`-- data
 ```
 
 ## Reproduce
