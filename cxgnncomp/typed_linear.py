@@ -96,7 +96,7 @@ class TypedLinearE2EOP(torch.autograd.Function):
                 count=None):
         if len(preprocessed) == 4:
             # return typed_matmul(x, weights, types, x.shape[0])
-            print("reuse preprocessed")
+            # print("reuse preprocessed")
             sorted_types, num_item, indices, count = preprocessed
         else:
             t0 = time.time()
@@ -156,7 +156,7 @@ class TypedLinearS2EOP(torch.autograd.Function):
         cxgnncomp_backend.pad_rel_idx(new_types, new_src_idx, count, thres,
                                       num_rel, types.shape[0])
         sorted_types, indices = torch.sort(new_types)
-        print("num valid item for S2E", num_item)
+        # print("num valid item for S2E", num_item, sorted_types)
         return [sorted_types, num_item, new_src_idx, indices]
 
     @staticmethod
@@ -173,7 +173,7 @@ class TypedLinearS2EOP(torch.autograd.Function):
             sorted_types, num_item, new_src_idx, indices = preprocessed
         else:
             sorted_types, num_item, new_src_idx, indices = TypedLinearS2EOP.preprocess(
-                x, weights, types, src_idx, thres)
+                weights, types, src_idx, thres)
         output = typed_matmul(
             x,
             weights,

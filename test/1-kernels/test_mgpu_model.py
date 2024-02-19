@@ -11,7 +11,7 @@ import dgl
 import dgl.function as fn
 
 logger = logging.getLogger(__name__)
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 
 
 def setup(rank, world_size):
@@ -108,6 +108,7 @@ class DistAggrOP(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_emb, graphs, num_src_node, num_dst_node, num_device,
                 rank, layer, profile, graph_type):
+        print(f"rank {rank} in forward {layer} {input_emb.device} {input_emb.shape}")
         ctx.graphs = graphs
         ctx.num_device = num_device
         ctx.rank = rank
@@ -150,11 +151,14 @@ class DistAggrOP(torch.autograd.Function):
                 else:
                     feat = remote_feat[:num_remote_src_node]
             t0 = time.time()
+            print(
+                f"begin bcast from {i}: rank {rank} layer {layer} feat {feat.shape} {feat.device}"
+            )
             dist.broadcast(feat, i)
             if profile:
                 torch.cuda.synchronize(rank)
                 print(
-                    f"broadcast {i}: rank {rank} layer {layer} {time.time() - t0}"
+                    f"finish bcast from {i}: rank {rank} layer {layer} {time.time() - t0} feat {feat.shape} {feat.device}"
                 )
 
             time.time()
@@ -234,18 +238,20 @@ class DistAggrOPDensify(torch.autograd.Function):
             num_dst_node % num_device)
         output = torch.zeros(num_local_dst_node,
                              input_emb.shape[1],
-                             device=input_emb.device)
+                             device=rank)
         # local computation
-        logger.info("begin local computation")
-        cxgnncomp_backend.target_aggr(input_emb,
-                                      graphs[rank].ptr.to(torch.int64),
-                                      graphs[rank].idx.to(torch.int64),
-                                      graphs[rank].target.to(torch.int64),
+        logger.info("begin local computation {}".format(torch.cuda.memory_allocated(rank)))
+        torch.cuda.synchronize(rank)
+        cxgnncomp_backend.target_aggr(input_emb.to(rank),
+                                      graphs[rank].ptr.to(rank).to(torch.int64),
+                                      graphs[rank].idx.to(rank).to(torch.int64),
+                                      graphs[rank].target.to(rank).to(torch.int64),
                                       output, graphs[rank].ptr.shape[0] - 1)
-        logger.info("end local computation")
+        logger.info("end local computation {}".format(torch.cuda.memory_allocated(rank)))
         torch.cuda.synchronize(rank)
         for receiver in range(num_device):
             for sender in range(num_device):
+                # logger.info(receiver, sender, torch.cuda.memory_allocated(rank))
                 if receiver == rank:
                     if sender == rank:
                         continue
@@ -254,12 +260,12 @@ class DistAggrOPDensify(torch.autograd.Function):
                         graph = graphs[sender]
                         buf = torch.empty(
                             [graph.num_unique, input_emb.shape[1]],
-                            device=input_emb.device)
+                            device=rank)
                         dist.recv(buf, sender)
                         cxgnncomp_backend.target_aggr(
-                            buf, graph.ptr.to(torch.int64),
-                            graph.idx.to(torch.int64),
-                            graph.target.to(torch.int64), output,
+                            buf, graph.ptr.to(rank).to(torch.int64),
+                            graph.idx.to(rank).to(torch.int64),
+                            graph.target.to(rank).to(torch.int64), output,
                             graph.ptr.shape[0] - 1)
                         torch.cuda.synchronize(rank)
                         del buf
@@ -271,7 +277,7 @@ class DistAggrOPDensify(torch.autograd.Function):
                         #     f"rank {rank} send to {receiver} {torch.cuda.memory_allocated(rank)} {ctx.idx_needed_layered[receiver].shape} {input_emb.shape}",
                         #     flush=True)
                         torch.cuda.synchronize(rank)
-                        buf = input_emb[ctx.idx_needed_layered[receiver]]
+                        buf = input_emb.to(rank)[ctx.idx_needed_layered[receiver]]
                         torch.cuda.synchronize(rank)
                         dist.send(buf, receiver)
                         torch.cuda.synchronize(rank)
@@ -337,6 +343,9 @@ class Model(cxgc.GNN):
                          graph_type,
                          config=None,
                          **kwargs)
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
         self.num_device = num_device
         self.linears = []
         self.linears.append(
@@ -352,6 +361,7 @@ class Model(cxgc.GNN):
             torch.nn.Linear(hidden_channels, out_channels,
                             bias=False).cuda(rank))
         self.channels.append(hidden_channels)
+        self.channels.append(out_channels)
 
     def reset_parameters(self):
         for linear in self.linears:
@@ -378,6 +388,13 @@ class Model(cxgc.GNN):
             print(f"rank {rank} layer {l} {input_emb.shape}",
                   torch.cuda.memory_allocated(rank))
             dist.barrier()
+            if self.channels[l] > self.channels[l + 1]:
+                print(f"rank {rank} layer {l} {input_emb.shape} {input_emb.device} begin mm {torch.cuda.memory_allocated(rank)}")
+                torch.cuda.synchronize(rank)
+                input_emb = self.linears[l](input_emb)
+                torch.cuda.synchronize(rank)
+                print(f"rank {rank} layer {l} {input_emb.shape} {input_emb.device} finish mm {torch.cuda.memory_allocated(rank)}")
+            dist.barrier()
             if config["skip_input"] and l == 0:
                 output = input_emb
             else:
@@ -385,14 +402,18 @@ class Model(cxgc.GNN):
                     output = DistAggrOPDensify.apply(
                         input_emb, graphs[l], num_node_in_layer[-1 - l],
                         num_node_in_layer[-1 - l - 1], self.num_device, rank,
-                        idx_needed_layered[l], config["graph_type"])
+                        idx_needed_layered[l])
                 else:
                     output = DistAggrOP.apply(input_emb, graphs[l],
                                               num_node_in_layer[-1 - l],
                                               num_node_in_layer[-1 - l - 1],
                                               self.num_device, rank, l, True,
                                               config["graph_type"])
-            input_emb = self.linears[l](output)
+            if self.channels[l] <= self.channels[l + 1]:
+                input_emb = self.linears[l](output)
+            else:
+                input_emb = output
+            # input_emb = self.linears[l](output)
         return input_emb
 
     def forward(self, graphs, rank, local_feat, num_node_in_layer,
@@ -447,7 +468,7 @@ def run(rank, world_size, args):
     else:
         logger.setLevel(logging.WARN)
     setup(rank, world_size)
-
+    torch.cuda.set_device(rank)
     model = Model(
         args.infeat,
         args.hiddenfeat,
@@ -462,93 +483,94 @@ def run(rank, world_size, args):
     model.reset_parameters()
 
     # prepare graphs
-    '''
-    graphs = []
-    for remote_rank in range(args.num_device):
-        ptr, idx, target = cxgc.partition_2d_gpu(edge_index,
-                                                 args.num_device,
-                                                 rank,
-                                                 remote_rank,
-                                                 device=rank)
-        graphs.append(cxgc.Batch(x=None, ptr=ptr, idx=idx, target=target))
-    del edge_index
-    for item in graphs:
-        item.to(rank)
-    '''
-    if args.gen_cache:
-        feat, ptr, idx, batch, edge_index = cxgc.prepare_graph(
-            dset=args.dataset,
-            feat_len=args.infeat,
-            num_head=args.num_head,
-            num_seeds=args.num_seeds,
-            need_edge_index=True,
-            is_full_graph=args.is_full_graph,
-            device="cpu",
-            need_feat=False,
-            rank=rank)
-        del ptr, idx
-        # print("bincount", torch.bincount(batch["visit_mask"] + 1))
-
-        # reorder graph for locality
-        if args.reorder_file != "":
-            new_order = torch.from_numpy(
-                np.fromfile(args.reorder_file + "reorder_" + args.dataset +
-                            ".dat",
-                            dtype=np.int64)).to(edge_index.device)
-            edge_index = new_order[edge_index]
-            new_mask = torch.ones_like(batch["visit_mask"]) * -1
-            for i in range(0, args.num_layer + 1):
-                new_mask[new_order[batch["visit_mask"] == i]] = i
-            batch["visit_mask"] = new_mask
+    if args.is_full_graph == 1:
+        graphs = []
+        for remote_rank in range(args.num_device):
+            ptr, idx, target = cxgc.partition_2d_gpu(edge_index,
+                                                    args.num_device,
+                                                    rank,
+                                                    remote_rank,
+                                                    device=rank)
+            graphs.append(cxgc.Batch(x=None, ptr=ptr, idx=idx, target=target))
+        del edge_index
+        for item in graphs:
+            item.to(rank)
+        graphs_in_layer = [graphs for _ in range(args.num_layer)]
+    elif args.is_full_graph == 2:
+        if args.gen_cache:
+            feat, ptr, idx, batch, edge_index = cxgc.prepare_graph(
+                dset=args.dataset,
+                feat_len=args.infeat,
+                num_head=args.num_head,
+                num_seeds=args.num_seeds,
+                need_edge_index=True,
+                is_full_graph=args.is_full_graph,
+                device="cpu",
+                need_feat=False,
+                rank=rank)
+            del ptr, idx
             # print("bincount", torch.bincount(batch["visit_mask"] + 1))
-            # arr = torch.arange(new_order.shape[0], device=new_order.device)
-            # print(batch["visit_mask"].dtype)
-            # arr = arr[batch["visit_mask"]]
-            # arr = new_order[arr]
-            # batch["visit_mask"] = torch.zeros_like(batch["visit_mask"])
-            # batch["visit_mask"] = new_order[batch["visit_mask"]]
 
-        graphs_in_layer = [[] for _ in range(args.num_layer)]
-        visit_mask = batch["visit_mask"]  # .to(rank)
-        print(edge_index.shape)
-        # edge_index = edge_index.to(rank)
-        for l in range(args.num_layer):
-            for i in range(args.num_device):
-                ptr, idx, target = cxgc.partition_2d_gpu_layered(
-                    edge_index,
-                    args.num_device,
-                    rank_dst=rank,
-                    rank_src=i,
-                    visit_mask=visit_mask,
-                    layer_id=l)
-                graphs_in_layer[l].append(
-                    cxgc.Batch(x=None, ptr=ptr, idx=idx, target=target))
-        import os
-        for l in range(args.num_layer):
-            for it, item in enumerate(graphs_in_layer[l]):
-                # create directory with dataset name
-                dir = f".cache/{args.dataset}_{args.num_device}_{rank}_{l}_{it}"
-                if not os.path.exists(dir):
-                    os.makedirs(dir)
-                item.tofile(dir)
-        with open(f".cache/{args.dataset}_num_node_in_layer.txt", 'w') as f:
-            for item in batch["num_node_in_layer"]:
-                print(item, file=f)
-        return
-    else:
-        graphs_in_layer = [[] for _ in range(args.num_layer)]
-        for l in range(args.num_layer):
-            if args.skip_input and l == 0:
-                continue
-            for i in range(args.num_device):
-                b = cxgc.Batch(x=None, ptr=None, idx=None, target=None)
-                b.fromfile(
-                    f".cache/{args.dataset}_{args.num_device}_{rank}_{l}_{i}")
-                graphs_in_layer[l].append(b)
-        with open(f".cache/{args.dataset}_num_node_in_layer.txt", 'r') as f:
-            num_node_in_layer = [int(x) for x in f.readlines()]
-            if rank == 0:
-                print("num_node_in_layer", num_node_in_layer)
+            # reorder graph for locality
+            if args.reorder_file != "":
+                new_order = torch.from_numpy(
+                    np.fromfile(args.reorder_file + "reorder_" + args.dataset +
+                                ".dat",
+                                dtype=np.int64)).to(edge_index.device)
+                edge_index = new_order[edge_index]
+                new_mask = torch.ones_like(batch["visit_mask"]) * -1
+                for i in range(0, args.num_layer + 1):
+                    new_mask[new_order[batch["visit_mask"] == i]] = i
+                batch["visit_mask"] = new_mask
+                # print("bincount", torch.bincount(batch["visit_mask"] + 1))
+                # arr = torch.arange(new_order.shape[0], device=new_order.device)
+                # print(batch["visit_mask"].dtype)
+                # arr = arr[batch["visit_mask"]]
+                # arr = new_order[arr]
+                # batch["visit_mask"] = torch.zeros_like(batch["visit_mask"])
+                # batch["visit_mask"] = new_order[batch["visit_mask"]]
+
+            graphs_in_layer = [[] for _ in range(args.num_layer)]
+            visit_mask = batch["visit_mask"]  # .to(rank)
+            print(edge_index.shape)
+            # edge_index = edge_index.to(rank)
+            for l in range(args.num_layer):
+                for i in range(args.num_device):
+                    ptr, idx, target = cxgc.partition_2d_gpu_layered(
+                        edge_index,
+                        args.num_device,
+                        rank_dst=rank,
+                        rank_src=i,
+                        visit_mask=visit_mask,
+                        layer_id=l)
+                    graphs_in_layer[l].append(
+                        cxgc.Batch(x=None, ptr=ptr, idx=idx, target=target))
+            import os
+            for l in range(args.num_layer):
+                for it, item in enumerate(graphs_in_layer[l]):
+                    # create directory with dataset name
+                    dir = f".cache/{args.dataset}_{args.num_device}_{rank}_{l}_{it}"
+                    if not os.path.exists(dir):
+                        os.makedirs(dir)
+                    item.tofile(dir)
+            with open(f".cache/{args.dataset}_num_node_in_layer.txt", 'w') as f:
+                for item in batch["num_node_in_layer"]:
+                    print(item, file=f)
+            return
+        else:
+            graphs_in_layer = [[] for _ in range(args.num_layer)]
+            for l in range(args.num_layer):
+                if args.skip_input and l == 0:
+                    continue
+                for i in range(args.num_device):
+                    b = cxgc.Batch(x=None, ptr=None, idx=None, target=None)
+                    b.fromfile(
+                        f".cache/{args.dataset}_{args.num_device}_{rank}_{l}_{i}")
+                    graphs_in_layer[l].append(b)
+            with open(f".cache/{args.dataset}_num_node_in_layer.txt", 'r') as f:
+                num_node_in_layer = [int(x) for x in f.readlines()]
+                if rank == 0:
+                    print("num_node_in_layer", num_node_in_layer)
 
     cpu_graph_data = True
     for l in range(args.num_layer):
@@ -616,14 +638,14 @@ def run(rank, world_size, args):
         if rank != world_size - 1:
             local_feat = torch.randn(
                 [num_total_node // world_size, args.infeat],
-                device="cpu",
+                device=rank if not args.skip_input else rank,
                 requires_grad=False)
         else:
             local_feat = torch.randn([
                 num_total_node // world_size +
                 (num_total_node % world_size), args.infeat
             ],
-                                     device="cpu",
+                device=rank if not args.skip_input else rank,
                                      requires_grad=False)
 
     # if rank == 0:
@@ -661,7 +683,7 @@ if __name__ == "__main__":
                         type=str,
                         default="/home/huangkz/repos/rabbit_order/demo/")
     parser.add_argument("--num_device", type=int, default=4)
-    parser.add_argument("--num_epoch", type=int, default=10)
+    parser.add_argument("--num_epoch", type=int, default=5)
     parser.add_argument("--gen_cache", type=int, default=0)
     parser.add_argument("--skip_input", type=int, default=0)
     parser.add_argument("--densify", type=int, default=1)

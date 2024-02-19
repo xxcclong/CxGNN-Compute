@@ -12,7 +12,8 @@ class Batch():
                  idx,
                  num_node_in_layer=None,
                  num_edge_in_layer=None,
-                 target=None):
+                 target=None,
+                 edge_index=None):
         self.x = x
         self.ptr = ptr
         self.idx = idx
@@ -20,6 +21,7 @@ class Batch():
         self.num_edge_in_layer = num_edge_in_layer
         self.target = target
         self.block = None
+        self.edge_index = edge_index
 
     def to(self, dev):
         if self.x is not None:

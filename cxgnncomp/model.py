@@ -8,6 +8,9 @@ from .util import log
 # import torch.autograd.profiler as profiler
 # from profile import gpu_profile
 import cxgnncomp_backend
+import dgl
+import dgl.function as fn
+from .neighbor_lstm import NeighborLstmPadOP, NeighborLstmOP
 
 
 class GNN(torch.nn.Module):
@@ -29,14 +32,14 @@ class GNN(torch.nn.Module):
     def init_convs(self, **kwargs):
         self.convs = torch.nn.ModuleList()
         self.convs.append(
-            self.init_conv(self.in_channels, self.hidden_channels, **kwargs))
-        for _ in range(self.num_layer - 2):
+            self.init_conv(self.in_channels, self.hidden_channels, layer=0, **kwargs))
+        for i in range(self.num_layer - 2):
             self.convs.append(
-                self.init_conv(self.hidden_channels, self.hidden_channels,
+                self.init_conv(self.hidden_channels, self.hidden_channels, layer=i + 1,
                                **kwargs))
         if self.num_layer > 1:
             self.convs.append(
-                self.init_conv(self.hidden_channels, self.out_channels,
+                self.init_conv(self.hidden_channels, self.out_channels, layer=self.num_layer - 1,
                                **kwargs))
 
     def init_conv(self, in_channels, out_channels, **kwargs):
@@ -49,14 +52,17 @@ class GNN(torch.nn.Module):
         for bn in self.bns:
             bn.reset_parameters()
 
-    def forward_cxg(self, batch):
+    def forward_cxg(self, batch, skip_first=False):
         x = batch.x
+        # print(f"skip_first {skip_first} {x.shape} {batch.num_node_in_layer}")
         for i, conv in enumerate(self.convs[:-1]):
             if self.graph_type == "CSR_Layer":
                 num_node = batch.num_node_in_layer[self.num_layer - 1 - i]
             else:
                 num_node = 0
-            x = conv(x, batch.ptr, batch.idx, num_node)
+            # print("num_node in layer", batch.num_node_in_layer, batch.x.shape)
+            if (not skip_first) or i != 0:
+                x = conv(x, batch.ptr, batch.idx, num_node)
             x = self.bns[i](x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
@@ -82,7 +88,7 @@ class GNN(torch.nn.Module):
         x = self.convs[-1](x, edge_index)
         return x.log_softmax(dim=-1)
 
-    def forward(self, input):
+    def forward(self, input, skip_first=False):
         if "CSR" in self.graph_type:
             return self.forward_cxg(input)
         elif "DGL" in self.graph_type:
@@ -157,7 +163,7 @@ class RGCN(GNN):
         else:
             assert (0)
 
-    def forward_cxg(self, batch):
+    def forward_cxg(self, batch, skip_first):
         x = batch.x
         if self.gen_rel:
             etypes = cxgnncomp_backend.gen_edge_type_mag240m(
@@ -280,6 +286,63 @@ class GIN(GNN):
         else:
             assert (0)
 
+class LSTMConv(torch.nn.Module):
+
+    def __init__(self, in_channels, out_channels, graph_type) -> None:
+        super().__init__()
+        self.graph_type = graph_type
+        if graph_type == "PyG":
+            self.conv = pygnn.SAGEConv(in_channels, out_channels, aggr="lstm").cuda()
+        else:
+            self.lstm_module = torch.nn.LSTM(in_channels, out_channels, batch_first=True).cuda()
+        self.count = None
+        self.previous_num_node = -1
+
+    def lstm_dgl(self, batch):
+        def _lstm_reducer(nodes):
+            m = nodes.mailbox["m"]  # (B, L, D)
+            batch_size = m.shape[0]
+            _, (rst, _) = self.lstm_module(
+                m,
+            )
+            return {"neigh": rst.squeeze(0)}
+
+        num_src = batch.num_node_in_layer[-1]
+        num_dst = batch.num_node_in_layer[-2]
+        dgl_graph = dgl.graph((batch.edge_index[0], batch.edge_index[1]), num_nodes=num_src).to("cuda")
+        # dgl_graph.ndata["h"] = batch.x
+        dgl_graph.srcdata["h"] = batch.x
+        msg_fn = fn.copy_u("h", "m")
+        # msg_fn = fn.copy_src("h", "m")
+        dgl_graph.update_all(msg_fn, _lstm_reducer)
+        return dgl_graph.ndata["neigh"]
+
+    def forward(self, batch):
+        with torch.inference_mode():
+            if "CSR" in self.graph_type:
+                if self.count is None or self.previous_num_node != batch.ptr.shape[0] - 1:
+                    deg = batch.ptr[1:] - batch.ptr[:-1]
+                    self.count = torch.bincount(deg).cpu()
+                    self.previous_num_node = batch.ptr.shape[0] - 1
+                num_edge = batch.idx.shape[0]
+                if num_edge / 2 > 1e8 and num_edge / 2 < 1.2e8:
+                    num_center_in_batch = 4096 * 4
+                    num_neighbor_in_batch = 50000 * 4
+                else:
+                    num_center_in_batch = 4096
+                    num_neighbor_in_batch = 50000
+                # num_center_in_batch = 64
+                # num_neighbor_in_batch = 10000
+                # print(torch.cuda.memory_allocated(0) / 1024 / 1024 / 1024)
+                return NeighborLstmPadOP(
+                    self.lstm_module, batch.ptr, batch.idx, batch.x, self.count, num_center_in_batch, num_neighbor_in_batch)
+                # return NeighborLstmOP(
+                #     self.lstm_module, batch.ptr, batch.idx, batch.x, self.count)
+            elif "DGL" in self.graph_type:
+                return self.lstm_dgl(batch)
+            elif "PyG" in self.graph_type or "COO" in self.graph_type:
+                return self.conv(batch.edge_index)
+
 
 graph_type_dict = {
     "cxg": "CSR_Layer",
@@ -397,6 +460,8 @@ def get_model_from_str(mtype,
                      config=None,
                      num_rel=num_rel,
                      dataset_name=dataset)
+    elif mtype == "LSTM":
+        model = LSTMConv(infeat, outfeat, graph_type)
     else:
         assert False, f"unknown model {mtype}"
     return model

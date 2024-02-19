@@ -58,6 +58,7 @@ class _Timer:
     def __init__(self, name):
         self.name_ = name
         self.elapsed_ = 0.0
+        self.num_call = 0
         self.started_ = False
         self.start_time = time.time()
         self.input_shape = None
@@ -80,6 +81,7 @@ class _Timer:
         assert self.started_, 'timer' + self.name_ + ' is not started'
         torch.cuda.synchronize()
         self.elapsed_ += (time.time() - self.start_time)
+        self.num_call += 1
         self.started_ = False
 
     def reset(self):
@@ -88,6 +90,7 @@ class _Timer:
             return
         self.elapsed_ = 0.0
         self.started_ = False
+        self.num_call = 0
 
     def elapsed(self, reset=True):
         """Calculate the elapsed time."""
@@ -101,12 +104,13 @@ class _Timer:
         # Get the elapsed time.
         elapsed_ = self.elapsed_
         # Reset the elapsed time
+        num_call = self.num_call
         if reset:
             self.reset()
         # If timing was in progress, set it back.
         if started_:
             self.start()
-        return elapsed_
+        return elapsed_, num_call
 
 
 class Timers:
@@ -138,8 +142,11 @@ class Timers:
         assert normalizer > 0.0
         string = 'time (ms)'
         for name in sorted(self.timers.keys()):
-            elapsed_time = self.timers[name].elapsed(
-                reset=reset) * 1000.0 / normalizer
+            e, c = self.timers[name].elapsed(
+                reset=reset)
+            elapsed_time = e * 1000.0 / c
+            # elapsed_time = self.timers[name].elapsed(
+            #     reset=reset) * 1000.0 / normalizer
             string += ' | {}: {:.2f}'.format(name, elapsed_time)
             if self.timers[name].input_shape is not None:
                 string += '| {}: in:{} out:{}'.format(

@@ -7,7 +7,7 @@ in_feat = 32
 
 
 def prepare_data():
-    dset = "friendster-sample-1000"
+    dset = "arxiv"
     num_head = 1
     x, ptr, idx, b, edge_index = cxgc.prepare_data_full_graph(
         dset,
@@ -22,7 +22,15 @@ def prepare_data():
     return x, ptr, idx, b, num_head, edge_index
 
 
+def lstm_pyg():
+    conv = pygnn.SAGEConv(in_feat, in_feat, aggr="lstm").cuda()
+    cxgc.prof("lstm", "pyg", lambda: conv(x, edge_index))
+    exit()
+
+
 x, ptr, idx, batch, num_head, edge_index = prepare_data()
+
+# lstm_pyg()
 num_edge = idx.shape[0]
 num_center = ptr.shape[0] - 1
 deg = ptr[1:] - ptr[:-1]
@@ -38,14 +46,44 @@ print(
 
 lstm_module = torch.nn.LSTM(in_feat, in_feat, batch_first=True).cuda()
 
-
-def lstm_pyg():
-    conv = pygnn.SAGEConv(in_feat, in_feat, aggr="lstm").cuda()
-    cxgc.prof("lstm", "pyg", lambda: conv(x, edge_index))
-    exit()
+import dgl.function as fn
+import dgl
 
 
-# lstm_pyg()
+def lstm_dgl():
+
+    def _lstm_reducer(nodes):
+        """LSTM reducer
+        NOTE(zihao): lstm reducer with default schedule (degree bucketing)
+        is slow, we could accelerate this with degree padding in the future.
+        """
+        m = nodes.mailbox["m"]  # (B, L, D)
+        batch_size = m.shape[0]
+        # h = (
+        #     m.new_zeros((1, batch_size, self._in_src_feats)),
+        #     m.new_zeros((1, batch_size, self._in_src_feats)),
+        # )
+        _, (rst, _) = lstm_module(
+            m,
+        )
+        return {"neigh": rst.squeeze(0)}
+
+    num_src = batch["num_node_in_layer"][-1]
+    num_dst = batch["num_node_in_layer"][-2]
+    # dgl_graph = dgl.create_block(('csc', (ptr, idx, torch.tensor([]))),
+    #                              int(num_src), int(num_dst))
+    # print(dgl_graph.ntypes)
+    dgl_graph = dgl.graph((edge_index[0], edge_index[1]), num_nodes=num_src).to("cuda")
+    dgl_graph.ndata["h"] = x
+    msg_fn = fn.copy_src("h", "m")
+    # print(dgl_graph.ntypes)
+    dgl_graph.update_all(msg_fn, _lstm_reducer)
+
+    cxgc.prof("lstm", "dgl", lambda: dgl_graph.update_all(msg_fn, _lstm_reducer))
+
+
+# lstm_dgl()
+# exit()
 
 
 def run_lstm(module, count):
@@ -134,42 +172,4 @@ def run_padded_seq():
 
 # run_padded_seq()
 
-# run_lstm(lstm_module, count)
-
-import dgl.function as fn
-import dgl
-
-
-def lstm_dgl():
-
-    def _lstm_reducer(nodes):
-        """LSTM reducer
-        NOTE(zihao): lstm reducer with default schedule (degree bucketing)
-        is slow, we could accelerate this with degree padding in the future.
-        """
-        m = nodes.mailbox["m"]  # (B, L, D)
-        batch_size = m.shape[0]
-        # h = (
-        #     m.new_zeros((1, batch_size, self._in_src_feats)),
-        #     m.new_zeros((1, batch_size, self._in_src_feats)),
-        # )
-        _, (rst, _) = lstm_module(m, )
-        return {"neigh": rst.squeeze(0)}
-
-    num_src = batch["num_node_in_layer"][-1]
-    num_dst = batch["num_node_in_layer"][-2]
-    # dgl_graph = dgl.create_block(('csc', (ptr, idx, torch.tensor([]))),
-    #                              int(num_src), int(num_dst))
-    # print(dgl_graph.ntypes)
-    dgl_graph = dgl.graph((edge_index[0], edge_index[1]),
-                          num_nodes=num_src).to("cuda")
-    dgl_graph.ndata["h"] = x
-    msg_fn = fn.copy_src("h", "m")
-    # print(dgl_graph.ntypes)
-    dgl_graph.update_all(msg_fn, _lstm_reducer)
-
-    cxgc.prof("lstm", "dgl",
-              lambda: dgl_graph.update_all(msg_fn, _lstm_reducer))
-
-
-lstm_dgl()
+run_lstm(lstm_module, count)
