@@ -474,7 +474,22 @@ def show_tune_stages_gat():
         print(item)
 
 
-# show_tune_stages_gcn()
-# show_tune_stages_rgcn()
-# show_tune_stages_lstm()
-show_tune_stages_gat()
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str)
+    args = parser.parse_args()
+    print(args)
+    model_name = args.model.lower()
+    if model_name == "gcn":
+        show_tune_stages_gcn()
+    elif model_name == "rgcn":
+        show_tune_stages_rgcn()
+    elif model_name == "lstm":
+        show_tune_stages_lstm()
+    elif model_name == "gat":
+        show_tune_stages_gat()
+    else:
+        print("Error: The tested model should be in [gcn, gat, lstm, rgcn]")
+        exit()

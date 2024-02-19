@@ -145,3 +145,5 @@ test/4-cache/outputs/*
 *png
 
 tmp/*
+
+test/ae/*/outputs
