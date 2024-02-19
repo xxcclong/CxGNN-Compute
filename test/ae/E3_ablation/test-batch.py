@@ -185,4 +185,4 @@ def batching_lstm():
 
 
 batching_rgcn()
-# batching_lstm()
+batching_lstm()
