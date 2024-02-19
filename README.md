@@ -24,6 +24,7 @@ Install requirements. Make sure [CxGNN-DL](https://github.com/xxcclong/CxGNN-DL)
 ```bash
 cd CxGNN-Compute
 bash install.sh
+
 ```
 
 ### Data preparation
