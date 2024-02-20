@@ -2,7 +2,7 @@
 
 ## Setup
 
-** If you use our cluster (see [access.md](./test/ae/access.md)), just activate the prepared environment. ** 
+**If you use our cluster (see [access.md](./test/ae/access.md)), just activate the prepared environment.** 
 
 ```bash
 source /data/eurosysae/.venv/cxgnn/bin/activate
