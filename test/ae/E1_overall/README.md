@@ -11,6 +11,7 @@ use_segment_matmul: Optional[bool] = True
 ```
 else, PyG + RGCN will be very slow.
 
+#### Run all test using `run.sh`
 
 ```bash
 bash run.sh | tee output.txt

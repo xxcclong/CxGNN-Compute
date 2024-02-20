@@ -1,11 +1,11 @@
-# pip install torch==2.0.1
-# cd triton/python
-# python setup.py build -j32 develop
-# cd ../../
-# cd ../CxGNN-DL
-# python setup.py build -j32 develop
-# cd ../CxGNN-Compute
-# python setup.py build -j32 develop
+pip install torch==2.0.1
+yes | pip uninstall triton
+cd ../triton/python
+python setup.py build -j32 develop
+cd ../../CxGNN-DL
+python setup.py build -j32 develop
+cd ../CxGNN-Compute
+python setup.py build -j32 develop
 
 pip install  dgl==1.0.0 -f https://data.dgl.ai/wheels/cu117/repo.html
 pip install -r requirements.txt
