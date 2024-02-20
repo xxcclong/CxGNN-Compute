@@ -50,3 +50,7 @@ Scripts and READMEs for experiments are put in `test/ae/`
 ## TroubleShooting
 
 If you meet any problem, please contact us through email (hkz20@mails.tsinghua.edu.cn) or HotCRP.
+
+* Q: The program blocks when running overall test. A: Check the [overall test readme](test/ae/E1_overall/README.md) to fix the performance bug in PyG.
+* Q: There are CUDA OOM errors in overall test. A: Some baseline test will suffer from OOM, their number will not be displayed in the result file.
+* Q: I can only run `arxiv` in the accuracy test. A: The node feature data of the other two datasets are too large and not uploaded to the cloud drive. If you are interested in them, please contact me for the full datasets.
