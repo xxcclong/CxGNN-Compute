@@ -10,7 +10,7 @@ from cxgnncomp import (
     get_model_from_str,
     Batch,
     PyGBatch,
-    reorder_by
+    reorder_by,
 )
 import dgl
 import time
@@ -171,6 +171,12 @@ def to_dgl_block(ptr, idx, num_node_in_layer, num_edge_in_layer):
 
 def run_model(args, model):
     dset = args.dataset
+    if (
+        args.model.upper() in ["SAGE", "GCN"]
+        and args.graph_type == "CSR_Layer"
+        and dset == "arxiv"
+    ):
+        dset += "-ng"
     infeat, outfeat = get_dset_config(args.dataset)
     if args.model.upper() == "LSTM":
         infeat, outfeat = args.dedicate_feat, args.dedicate_feat
@@ -208,7 +214,16 @@ def run_model(args, model):
             args.model,
             lambda: train(
                 model,
-                [Batch(feat, ptr, idx, b["num_node_in_layer"], b["num_edge_in_layer"], edge_index=edge_index)],
+                [
+                    Batch(
+                        feat,
+                        ptr,
+                        idx,
+                        b["num_node_in_layer"],
+                        b["num_edge_in_layer"],
+                        edge_index=edge_index,
+                    )
+                ],
                 feat_label,
                 optimizer,
                 lossfn,

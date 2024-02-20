@@ -1,9 +1,9 @@
-# dsets=(arxiv products reddit papers100M-sample-1000 friendster-sample-1000)
-dsets=(papers100M-sample-1000 friendster-sample-1000)
-models=(LSTM)
-# models=(GAT SAGE GCN RGCN)
-graph_types=(CSR_Layer)
-# graph_types=(DGL CSR_Layer)
+dsets=(arxiv products reddit papers100M-sample-1000 friendster-sample-1000)
+# dsets=(papers100M-sample-1000 friendster-sample-1000)
+# models=(LSTM)
+models=(GAT SAGE GCN RGCN LSTM)
+# graph_types=(CSR_Layer)
+graph_types=(DGL CSR_Layer PyG)
 
 for graph_type in ${graph_types[@]}; do
     for model in ${models[@]}; do

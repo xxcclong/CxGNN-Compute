@@ -42,7 +42,7 @@ def batching_rgcn():
         weights, rel_int64, idx, thres=thres
     )
     output1 = cxgc.TypedLinearS2EOP.apply(x, weights, rel_int64, idx, preprocessed)
-    cxgc.prof("rgcn", "matmul", lambda: torch.mm(x, weights[0]))
+    # cxgc.prof("rgcn", "matmul", lambda: torch.mm(x, weights[0]))
     cxgc.prof("rgcn", "select matmul", lambda: cxgc.SelectMMS2EOP(x, weights, idx, rel))
     output = torch.empty([num_edge, weights.shape[-1]], device=x.device)
     cxgc.prof(
@@ -59,18 +59,20 @@ def batching_rgcn():
     #         ),
     #     )
 
-    for thres in [32, 64, 128, 256, 512]:
-        preprocessed = cxgc.TypedLinearS2EOP.preprocess(weights,
-                                                        rel_int64,
-                                                        idx,
-                                                        thres=thres)
-        output2 = cxgc.TypedLinearS2EOP.apply(x, weights, rel_int64, idx,
-                                              preprocessed)
-        cxgc.compare(output1, output2)
-        cxgc.prof(
-            "rgcn batching", f"{thres}", lambda: cxgc.TypedLinearS2EOP.apply(
-                x, weights, rel_int64, idx, preprocessed))
-    # exit()
+    # for thres in [32, 64, 128, 256, 512]:
+    #     preprocessed = cxgc.TypedLinearS2EOP.preprocess(
+    #         weights, rel_int64, idx, thres=thres
+    #     )
+    #     output2 = cxgc.TypedLinearS2EOP.apply(x, weights, rel_int64, idx, preprocessed)
+    #     cxgc.compare(output1, output2)
+    #     cxgc.prof(
+    #         "rgcn batching",
+    #         f"{thres}",
+    #         lambda: cxgc.TypedLinearS2EOP.apply(
+    #             x, weights, rel_int64, idx, preprocessed
+    #         ),
+    #     )
+    exit()
 
     # e2e
     print("==========E2E==========")
@@ -114,11 +116,11 @@ def batching_lstm():
     ptr, idx = cxgc.reorder_by(ptr, idx, metric)
     del metric
     del deg
-    cxgc.prof(
-        "lstm neighbor op",
-        "padding",
-        lambda: cxgc.NeighborLstmOP(lstm_module, ptr, idx, x, count),
-    )
+    # cxgc.prof(
+    #     "lstm neighbor op",
+    #     "padding",
+    #     lambda: cxgc.NeighborLstmOP(lstm_module, ptr, idx, x, count),
+    # )
     for num_center_in_batch in [
         1,
         2,
@@ -133,10 +135,10 @@ def batching_lstm():
         1024,
         2048,
         4096,
-        8192,
-        16384,
-        32768,
-        65536,
+        # 8192,
+        # 16384,
+        # 32768,
+        # 65536,
     ]:
         cxgc.prof(
             "lstm neighbor op",
@@ -146,6 +148,7 @@ def batching_lstm():
             ),
         )
 
+    exit()
     new_tensor = torch.randn([3, 13161, x.shape[-1]], device=x.device)
 
     s1 = torch.cuda.Stream()
@@ -184,5 +187,15 @@ def batching_lstm():
         )
 
 
-batching_rgcn()
-batching_lstm()
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--model", type=str)
+args = parser.parse_args()
+
+if args.model.lower() == "rgcn":
+    batching_rgcn()
+elif args.model.lower() == "lstm":
+    batching_lstm()
+else:
+    print("unsupported model", args.model)
