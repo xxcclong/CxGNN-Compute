@@ -1,6 +1,6 @@
 ## How to get access to our server
 
-** As one can only log in our server using public key, you need to provide your public key through e-mail or using hotcrp comment **
+** One can only log in our server using public key, so you need to provide your public key through e-mail or using hotcrp comment **
 
 After providing your public key:
 

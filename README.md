@@ -2,7 +2,7 @@
 
 ## Setup
 
-If you use our cluster, just activate the prepared environment.
+** If you use our cluster (see [access.md](./test/ae/access.md)), just activate the prepared environment. ** 
 
 ```bash
 source /data/eurosysae/.venv/cxgnn/bin/activate
@@ -19,7 +19,7 @@ python3 -m venv ~/.venv/cxgnn
 source ~/.venv/cxgnn/bin/activate
 ```
 
-Install requirements. Make sure [CxGNN-DL](https://github.com/xxcclong/CxGNN-DL) and the [modified triton](https://github.com/xxcclong/triton) are cloned and put aside with CxGNN-Compute.
+Install requirements. Make sure [CxGNN-DL](https://github.com/xxcclong/CxGNN-DL) and the [modified triton](https://github.com/xxcclong/triton) are cloned with `--recurse-submodules` and put aside with CxGNN-Compute.
 
 After it, the directory tree should be like
 
@@ -65,3 +65,4 @@ If you meet any problem, please contact us through email (hkz20@mails.tsinghua.e
 * Q: The program blocks when running overall test. A: Check the [overall test readme](test/ae/E1_overall/README.md) to fix the performance bug in PyG.
 * Q: There are CUDA OOM errors in overall test. A: Some baseline test will suffer from OOM, their number will not be displayed in the result file.
 * Q: I can only run `arxiv` in the accuracy test. A: The node feature data of the other two datasets are too large and not uploaded to the cloud drive. If you are interested in them, please contact me for the full datasets.
+* Q: Failed compilation. A: Make sure you have CUDA, cmake, and GCC in your path; And use `--recurse-submodules` when `git clone`
