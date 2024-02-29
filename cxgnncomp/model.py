@@ -163,7 +163,7 @@ class RGCN(GNN):
         else:
             assert (0)
 
-    def forward_cxg(self, batch, skip_first):
+    def forward_cxg(self, batch, skip_first=False):
         x = batch.x
         if self.gen_rel:
             etypes = cxgnncomp_backend.gen_edge_type_mag240m(
