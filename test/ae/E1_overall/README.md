@@ -1,3 +1,5 @@
+To reproduce Figure 13
+
 ### Run the tests
 
 Before running, change the implementation of PyG in its source code.

@@ -1,3 +1,5 @@
+To reproduce Figure 14(b)
+
 Run the tests
 
 ```
