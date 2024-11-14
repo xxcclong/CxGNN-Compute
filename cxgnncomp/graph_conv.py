@@ -141,13 +141,13 @@ class MySageConv(torch.nn.Module):
 
         if self.in_channels > self.hidden_channels:
             out = self.lin_l(x)
-            out = AggrOP.apply(out, ptr, idx, num_node)
-            # out = sage_mean_forward(out, ptr, idx, num_node)
+            # out = AggrOP.apply(out, ptr, idx, num_node)
+            out = sage_mean_forward(out, ptr, idx, num_node)
         else:
-            out = AggrOP.apply(x, ptr, idx, num_node)
+            # out = AggrOP.apply(x, ptr, idx, num_node)
             # print(x.device, ptr.device, self.lin_l.weight.device, torch.max(idx[:ptr[num_node]]), x.shape, ptr.shape, ptr[num_node], idx.shape, num_node)
             # torch.cuda.synchronize()
-            # out = sage_mean_forward(x, ptr, idx, num_node)
+            out = sage_mean_forward(x, ptr, idx, num_node)
             # torch.cuda.synchronize()
             out = self.lin_l(out)
 
@@ -527,15 +527,15 @@ class MyGATConv(torch.nn.Module):
             )
             transformed = TimerOP.apply(transformed, "mm1", False)
             transformed = TimerOP.apply(transformed, "aggregation", True)
-            # x = sage_sum_forward_edge_value(
-            #     transformed, ptr, idx, edge_value, num_dst
-            # ).squeeze()
-            x = AggrOP.apply(transformed.squeeze(), ptr, idx, num_dst).squeeze()
+            x = sage_sum_forward_edge_value(
+                transformed, ptr, idx, edge_value, num_dst
+            ).squeeze()
+            # x = AggrOP.apply(transformed.squeeze(), ptr, idx, num_dst).squeeze()
             x = TimerOP.apply(x, "aggregation", False)
         else:
             x = TimerOP.apply(x, "aggregation", True)
-            # x = sage_sum_forward_edge_value(x, ptr, idx, edge_value.squeeze(), num_dst)
-            x = AggrOP.apply(x.squeeze(), ptr, idx, num_dst).squeeze()
+            x = sage_sum_forward_edge_value(x, ptr, idx, edge_value.squeeze(), num_dst)
+            # x = AggrOP.apply(x.squeeze(), ptr, idx, num_dst).squeeze()
             x = TimerOP.apply(x, "aggregation", False)
             x = TimerOP.apply(x, "mm1", True)
             x = torch.mm(x, self.lin_src.T)
@@ -547,7 +547,8 @@ class MyGATConv(torch.nn.Module):
             return x
 
     def forward(self, x, ptr, idx, num_dst, num_src, num_edge):
-        # print(x.shape, ptr.shape, idx.shape, num_dst, num_src, num_edge, self.heads)
+        ptr = ptr[:num_dst + 1]
+        idx = idx[:num_edge]
         if self.heads == 1:
             return self.forward_1(x, ptr, idx, num_dst, num_src, num_edge)
         else:
